@@ -1,8 +1,8 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the Phase 0 monorepo foundation: the approved React frontend, a minimal FastAPI
-backend, and Moonrepo tasks for running both applications.
+the approved React frontend and a FastAPI backend with the Phase 1 database
+foundation: environment settings, SQLModel, SQLite, and Alembic migrations.
 
 ## Repository layout
 
@@ -10,7 +10,7 @@ backend, and Moonrepo tasks for running both applications.
 .
 ├── apps/
 │   ├── frontend/       # Approved React, TypeScript, and Vite prototype
-│   └── backend/        # Minimal FastAPI application
+│   └── backend/        # FastAPI, SQLModel, SQLite, and Alembic
 ├── docs/               # Project documentation added in later phases
 ├── infrastructure/     # Deployment files added in later phases
 ├── .moon/              # Moonrepo workspace configuration
@@ -35,8 +35,14 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains only local defaults in Phase 0. Neither
-application requires a secret yet.
+The environment file contains local Phase 1 defaults. Neither application
+requires a secret yet.
+
+Create or update the local SQLite database before starting the backend:
+
+```bash
+moon run backend:migrate
+```
 
 ## Run the applications
 
@@ -62,20 +68,34 @@ Check the API at <http://127.0.0.1:8000/health>. A successful response is:
 {"status":"ok"}
 ```
 
+The database-specific health check is available at
+<http://127.0.0.1:8000/health/database> and returns:
+
+```json
+{"status":"ok","database":"ok"}
+```
+
 The applications can also be started with their native package managers:
 
 ```bash
 corepack pnpm@10.12.1 --dir apps/frontend dev
-uv run --project apps/backend uvicorn app.main:app --reload
+uv run --project apps/backend uvicorn --app-dir apps/backend app.main:app --reload
+```
+
+The native Alembic equivalent of the Moon migration command is:
+
+```bash
+uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 ```
 
 ## Build and test
 
 ```bash
 moon run frontend:build
+moon run backend:migrate
 moon run backend:test
 moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. No database or external service is needed in Phase 0.
+test suite. Phase 1 uses a local SQLite file and needs no external database.

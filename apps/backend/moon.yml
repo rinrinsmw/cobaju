@@ -19,6 +19,19 @@ tasks:
       - "pyproject.toml"
       - "uv.lock"
 
+  migrate:
+    command: "uv run alembic upgrade head"
+    env:
+      UV_CACHE_DIR: "../../.uv-cache"
+    inputs:
+      - "alembic.ini"
+      - "alembic/**/*.py"
+      - "app/**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+    outputs:
+      - "cobaju.db"
+
   check:
     deps:
       - "test"
