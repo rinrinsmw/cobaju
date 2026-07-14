@@ -1,0 +1,11 @@
+{
+  "title": "wardrobe assistant",
+  "description": "Transforms standard HTML content into an engaging, Pinterest-style visual layout to enhance user experience and content discovery.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

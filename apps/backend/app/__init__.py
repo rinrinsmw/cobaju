@@ -1,0 +1,1 @@
+"""Cobaju backend application package."""

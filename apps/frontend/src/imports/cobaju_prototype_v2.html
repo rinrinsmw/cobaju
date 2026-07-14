@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cobaju — AI Personal Stylist</title>
+  <style>
+    :root{
+      --bg:#f7f3ec;
+      --surface:#ffffff;
+      --surface-2:#f0ebe2;
+      --text:#1f2a25;
+      --muted:#6f766f;
+      --primary:#214f3d;
+      --primary-2:#2f6e56;
+      --accent:#c7a36b;
+      --border:#e7e0d5;
+      --success:#2c7b59;
+      --warning:#f6e7ba;
+      --danger:#b94a48;
+      --shadow:0 14px 34px rgba(33,79,61,.10);
+      --radius-lg:28px;
+      --radius-md:18px;
+      --radius-sm:12px;
+      --sidebar:260px;
+    }
+
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{
+      margin:0;
+      font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+    button,input,select{font:inherit}
+    button{cursor:pointer}
+    .app{min-height:100vh;display:grid;grid-template-columns:var(--sidebar) 1fr}
+
+    .sidebar{
+      background:linear-gradient(180deg,#173a2f,#214f3d 60%,#173a2f);
+      color:white;
+      padding:26px 18px;
+      position:sticky;
+      top:0;
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      gap:18px;
+    }
+    .brand{display:flex;align-items:center;gap:12px;padding:4px 8px 18px}
+    .brand-mark{
+      width:46px;height:46px;border-radius:16px;background:white;color:var(--primary);
+      display:grid;place-items:center;font-size:24px;box-shadow:0 8px 20px rgba(0,0,0,.12)
+    }
+    .brand h1{font-size:22px;margin:0}
+    .brand small{display:block;color:#d7e4de;margin-top:2px}
+    .nav{display:flex;flex-direction:column;gap:8px}
+    .nav-btn{
+      border:0;background:transparent;color:#d8e5df;border-radius:14px;padding:13px 14px;
+      display:flex;align-items:center;gap:12px;text-align:left;transition:.2s
+    }
+    .nav-btn:hover,.nav-btn.active{background:rgba(255,255,255,.12);color:white;transform:translateX(2px)}
+    .sidebar-card{
+      margin-top:auto;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);
+      border-radius:18px;padding:16px
+    }
+    .sidebar-card strong{display:block}
+    .sidebar-card p{font-size:13px;color:#d7e4de;margin:6px 0 12px}
+    .mini-progress{height:8px;background:rgba(255,255,255,.15);border-radius:999px;overflow:hidden}
+    .mini-progress div{height:100%;width:73%;background:#f1d6a8}
+
+    main{padding:32px;min-width:0}
+    .page{display:none;animation:fade .28s ease}
+    .page.active{display:block}
+    @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+    .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}
+    .title h2{margin:0;font-size:30px;letter-spacing:-.02em}
+    .title p{margin:6px 0 0;color:var(--muted)}
+    .top-actions{display:flex;align-items:center;gap:10px}
+    .icon-btn,.btn{
+      border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:11px 14px;
+      transition:.2s;box-shadow:0 4px 12px rgba(0,0,0,.03)
+    }
+    .icon-btn:hover,.btn:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+    .btn.primary{background:var(--primary);color:white;border-color:var(--primary)}
+    .btn.ghost{background:transparent}
+    .avatar{
+      width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#d8c1a3;font-weight:800
+    }
+
+    .hero{
+      background:linear-gradient(135deg,#173a2f,#2f6e56);
+      color:white;border-radius:32px;padding:34px;position:relative;overflow:hidden;box-shadow:var(--shadow)
+    }
+    .hero:before,.hero:after{
+      content:"";position:absolute;border-radius:50%;background:rgba(255,255,255,.07)
+    }
+    .hero:before{width:260px;height:260px;right:-60px;top:-90px}
+    .hero:after{width:150px;height:150px;right:120px;bottom:-80px}
+    .hero h3{font-size:36px;margin:0 0 10px;max-width:720px}
+    .hero p{margin:0;color:#dceae4;max-width:650px;line-height:1.6}
+    .prompt-bar{
+      margin-top:24px;display:flex;gap:10px;background:white;padding:8px;border-radius:18px;position:relative;z-index:2
+    }
+    .prompt-bar input{border:0;outline:none;flex:1;padding:12px 14px;background:transparent}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;position:relative;z-index:2}
+    .chip{
+      border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.08);color:white;
+      padding:8px 11px;border-radius:999px;font-size:13px
+    }
+
+    .grid{display:grid;gap:18px}
+    .grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .grid-2{grid-template-columns:1.2fr .8fr}
+    .card{
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+      padding:22px;box-shadow:0 8px 24px rgba(33,79,61,.06)
+    }
+    .section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+    .section-head h3{margin:0}
+    .muted{color:var(--muted)}
+    .stat-card{display:flex;justify-content:space-between;align-items:center}
+    .stat-card .num{font-size:32px;font-weight:800}
+    .stat-card .icon{
+      width:54px;height:54px;border-radius:18px;background:var(--surface-2);display:grid;place-items:center;font-size:26px
+    }
+
+    .closet-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .mini-item,.wardrobe-card{
+      border:1px solid var(--border);border-radius:20px;overflow:hidden;background:#fbfaf8;
+      transition:.2s
+    }
+    .mini-item:hover,.wardrobe-card:hover{transform:translateY(-4px);box-shadow:var(--shadow)}
+    .item-image{
+      height:150px;background:linear-gradient(145deg,#eee6dc,#d6ccbe);
+      display:grid;place-items:center;font-size:62px;position:relative
+    }
+    .item-image .fav{position:absolute;right:10px;top:10px;background:white;border-radius:50%;width:32px;height:32px;display:grid;place-items:center}
+    .item-body{padding:13px}
+    .item-body strong{display:block}
+    .item-body small{color:var(--muted)}
+    .tag{display:inline-flex;margin-top:8px;background:#dfece6;color:#24513f;padding:5px 8px;border-radius:999px;font-size:12px}
+
+    .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+    .filters input,.filters select{
+      border:1px solid var(--border);background:white;padding:11px 12px;border-radius:12px
+    }
+    .wardrobe-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+
+    .upload-shell{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    .dropzone{
+      min-height:360px;border:2px dashed #cfc6b8;border-radius:24px;background:#fbfaf8;
+      display:grid;place-items:center;text-align:center;padding:28px
+    }
+    .dropzone .big{font-size:58px}
+    .analysis{display:none}
+    .analysis.active{display:block}
+    .analysis-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .field{margin:10px 0}
+    .field label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+    .field input,.field select{
+      width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:12px;background:white
+    }
+    .progress-steps{display:flex;flex-direction:column;gap:10px;margin:18px 0}
+    .step{display:flex;align-items:center;gap:10px}
+    .step span:first-child{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:#e8eee9}
+    .step.done span:first-child{background:#dcefe5;color:var(--success)}
+    .preview-box{
+      height:310px;border-radius:22px;background:linear-gradient(145deg,#e9e1d5,#cfc2b2);
+      display:grid;place-items:center;font-size:120px
+    }
+
+    .stylist-layout{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:18px}
+    .chat-card{min-height:650px;display:flex;flex-direction:column}
+    .chat-log{flex:1;display:flex;flex-direction:column;gap:14px;overflow:auto}
+    .bubble{max-width:85%;padding:14px 16px;border-radius:18px;line-height:1.5}
+    .bubble.user{align-self:flex-end;background:var(--primary);color:white;border-bottom-right-radius:6px}
+    .bubble.ai{align-self:flex-start;background:var(--surface-2);border-bottom-left-radius:6px}
+    .composer{display:flex;gap:10px;margin-top:16px}
+    .composer input{flex:1;border:1px solid var(--border);border-radius:14px;padding:14px}
+    .thinking{
+      display:flex;gap:6px;align-items:center
+    }
+    .thinking i{
+      width:8px;height:8px;background:#6d7f76;border-radius:50%;display:block;animation:bounce 1s infinite
+    }
+    .thinking i:nth-child(2){animation-delay:.15s}.thinking i:nth-child(3){animation-delay:.3s}
+    @keyframes bounce{0%,80%,100%{transform:scale(.7);opacity:.5}40%{transform:scale(1.15);opacity:1}}
+
+    .outfit-card{background:#fbfaf8;border:1px solid var(--border);border-radius:24px;padding:18px}
+    .outfit-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+    .piece{background:white;border:1px solid var(--border);border-radius:16px;padding:12px;text-align:center}
+    .piece .emoji{font-size:48px}
+    .score{display:flex;justify-content:space-between;align-items:center;background:#dfece6;padding:12px 14px;border-radius:14px}
+    .reason-list{display:grid;gap:8px;margin:12px 0 0}
+    .reason-list div{display:flex;gap:8px;align-items:flex-start}
+
+    .trace{display:flex;flex-direction:column;gap:12px}
+    .trace-row{display:flex;gap:10px;align-items:flex-start}
+    .trace-dot{width:28px;height:28px;border-radius:50%;background:#dfece6;display:grid;place-items:center;font-size:13px;flex:0 0 auto}
+    .metric{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+    .developer-panel{display:none;margin-top:16px}
+    .developer-panel.active{display:block}
+
+    .history-list{display:grid;gap:12px}
+    .history-card{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border)}
+
+    .toast{
+      position:fixed;right:24px;bottom:24px;background:var(--primary);color:white;
+      padding:14px 18px;border-radius:14px;box-shadow:var(--shadow);display:none;z-index:10
+    }
+
+    .mobile-nav{display:none}
+    @media(max-width:1050px){
+      .app{grid-template-columns:1fr}
+      .sidebar{display:none}
+      .mobile-nav{
+        display:flex;position:sticky;top:0;z-index:20;background:rgba(247,243,236,.95);
+        backdrop-filter:blur(10px);padding:12px 16px;border-bottom:1px solid var(--border);justify-content:space-between
+      }
+      .mobile-nav .menu{display:flex;gap:6px;overflow:auto}
+      .mobile-nav button{border:0;background:white;padding:9px 11px;border-radius:12px}
+      main{padding:20px}
+      .grid-3,.grid-2,.upload-shell,.stylist-layout{grid-template-columns:1fr}
+      .wardrobe-grid{grid-template-columns:repeat(2,1fr)}
+    }
+    @media(max-width:640px){
+      .hero{padding:26px}
+      .hero h3{font-size:29px}
+      .prompt-bar{flex-direction:column}
+      .closet-row,.outfit-grid{grid-template-columns:1fr}
+      .wardrobe-grid{grid-template-columns:1fr 1fr}
+      .analysis-grid{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+  <div class="mobile-nav">
+    <strong>Cobaju</strong>
+    <div class="menu">
+      <button onclick="showPage('dashboard')">Home</button>
+      <button onclick="showPage('wardrobe')">Wardrobe</button>
+      <button onclick="showPage('upload')">Upload</button>
+      <button onclick="showPage('stylist')">Stylist</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">🧥</div>
+        <div><h1>Cobaju</h1><small>AI Personal Stylist</small></div>
+      </div>
+
+      <div class="nav">
+        <button class="nav-btn active" data-page="dashboard">🏠 Dashboard</button>
+        <button class="nav-btn" data-page="wardrobe">👕 My Wardrobe</button>
+        <button class="nav-btn" data-page="upload">➕ Upload Clothing</button>
+        <button class="nav-btn" data-page="stylist">🤖 AI Stylist</button>
+        <button class="nav-btn" data-page="history">🕘 History</button>
+      </div>
+
+      <div class="sidebar-card">
+        <strong>Demo wardrobe</strong>
+        <p>11 of 15 item slots used</p>
+        <div class="mini-progress"><div></div></div>
+      </div>
+    </aside>
+
+    <main>
+      <section id="dashboard" class="page active">
+        <div class="topbar">
+          <div class="title"><h2>Good evening, Alex 👋</h2><p>Your wardrobe is ready for a new look.</p></div>
+          <div class="top-actions"><button class="icon-btn">☀️</button><div class="avatar">A</div></div>
+        </div>
+
+        <div class="hero">
+          <h3>What would you like to wear today?</h3>
+          <p>Describe the occasion and Cobaju will build an outfit using only the clothes you own.</p>
+          <div class="prompt-bar">
+            <input id="heroPrompt" placeholder="Example: I need a smart casual outfit for dinner" />
+            <button class="btn primary" onclick="askFromHero()">Ask my stylist</button>
+          </div>
+          <div class="chips">
+            <button class="chip" onclick="preset('Interview tomorrow')">Interview tomorrow</button>
+            <button class="chip" onclick="preset('Casual coffee outfit')">Casual coffee</button>
+            <button class="chip" onclick="preset('Smart casual dinner')">Dinner tonight</button>
+          </div>
+        </div>
+
+        <div class="grid grid-3" style="margin-top:18px">
+          <div class="card stat-card"><div><div class="num">5</div><div class="muted">Tops</div></div><div class="icon">👕</div></div>
+          <div class="card stat-card"><div><div class="num">3</div><div class="muted">Bottoms</div></div><div class="icon">👖</div></div>
+          <div class="card stat-card"><div><div class="num">3</div><div class="muted">Shoes</div></div><div class="icon">👟</div></div>
+        </div>
+
+        <div class="grid grid-2" style="margin-top:18px">
+          <div class="card">
+            <div class="section-head"><div><h3>Your wardrobe</h3><div class="muted">11 of 15 items</div></div><button class="btn" onclick="showPage('wardrobe')">View all</button></div>
+            <div class="closet-row">
+              <div class="mini-item"><div class="item-image">👔</div><div class="item-body"><strong>White Oxford</strong><small>Formal top</small></div></div>
+              <div class="mini-item"><div class="item-image">👖</div><div class="item-body"><strong>Black Trousers</strong><small>Formal bottom</small></div></div>
+              <div class="mini-item"><div class="item-image">👞</div><div class="item-body"><strong>Black Loafers</strong><small>Formal shoes</small></div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="section-head"><div><h3>Recent recommendation</h3><div class="muted">Office presentation</div></div></div>
+            <div class="outfit-grid">
+              <div class="piece"><div class="emoji">👔</div><small>White Shirt</small></div>
+              <div class="piece"><div class="emoji">👖</div><small>Black Pants</small></div>
+              <div class="piece"><div class="emoji">👞</div><small>Black Shoes</small></div>
+            </div>
+            <button class="btn" onclick="showPage('history')">Open history</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="wardrobe" class="page">
+        <div class="topbar">
+          <div class="title"><h2>My Wardrobe</h2><p>Browse the items Cobaju can use in recommendations.</p></div>
+          <button class="btn primary" onclick="showPage('upload')">+ Add clothing</button>
+        </div>
+        <div class="filters">
+          <input placeholder="Search wardrobe..." />
+          <select><option>All categories</option><option>Tops</option><option>Bottoms</option><option>Shoes</option></select>
+          <select><option>All styles</option><option>Casual</option><option>Formal</option><option>Smart casual</option></select>
+        </div>
+        <div id="wardrobeGrid" class="wardrobe-grid"></div>
+      </section>
+
+      <section id="upload" class="page">
+        <div class="topbar">
+          <div class="title"><h2>Upload Clothing</h2><p>Add one clothing item at a time.</p></div>
+        </div>
+        <div class="upload-shell">
+          <div class="card">
+            <div class="dropzone" id="dropzone">
+              <div>
+                <div class="big">📷</div>
+                <h3>Drop your clothing photo here</h3>
+                <p class="muted">JPG, PNG, or WebP · Maximum 5 MB</p>
+                <button class="btn primary" onclick="simulateUpload()">Choose image</button>
+              </div>
+            </div>
+            <div id="previewWrap" style="display:none">
+              <div class="preview-box">👕</div>
+              <p class="muted">Processed preview with background removed.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div id="idleAnalysis">
+              <h3>AI analysis will appear here</h3>
+              <p class="muted">After upload, Cobaju will identify the category, color, style, and occasion.</p>
+              <div class="progress-steps">
+                <div class="step"><span>1</span><div><strong>Upload image</strong><div class="muted">One clothing item</div></div></div>
+                <div class="step"><span>2</span><div><strong>AI analyzes clothing</strong><div class="muted">Category, color, style</div></div></div>
+                <div class="step"><span>3</span><div><strong>Review and save</strong><div class="muted">Edit before confirming</div></div></div>
+              </div>
+            </div>
+
+            <div class="analysis" id="analysis">
+              <h3>AI clothing analysis</h3>
+              <div class="progress-steps">
+                <div class="step done"><span>✓</span><div><strong>Image processed</strong></div></div>
+                <div class="step done"><span>✓</span><div><strong>Metadata generated</strong></div></div>
+              </div>
+              <div class="analysis-grid">
+                <div class="field"><label>Category</label><select><option>Shirt</option><option>T-shirt</option><option>Jacket</option></select></div>
+                <div class="field"><label>Primary color</label><input value="Light blue" /></div>
+                <div class="field"><label>Style</label><select><option>Smart casual</option><option>Casual</option><option>Formal</option></select></div>
+                <div class="field"><label>Occasion</label><input value="Office, casual dinner" /></div>
+              </div>
+              <div class="field"><label>Description</label><input value="Light blue shirt suitable for smart-casual outfits." /></div>
+              <button class="btn primary" onclick="saveItem()">Save to wardrobe</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="stylist" class="page">
+        <div class="topbar">
+          <div class="title"><h2>AI Stylist</h2><p>Ask for an outfit using your own wardrobe.</p></div>
+          <button class="btn" onclick="toggleDeveloper()">Developer mode</button>
+        </div>
+
+        <div class="stylist-layout">
+          <div class="card chat-card">
+            <div class="chat-log" id="chatLog">
+              <div class="bubble ai">Hi Alex! Tell me where you're going or what kind of look you need.</div>
+            </div>
+            <div class="composer">
+              <input id="chatInput" placeholder="Example: I have a presentation tomorrow" />
+              <button class="btn primary" onclick="sendChat()">Send</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <h3>Agent workflow</h3>
+              <div class="trace">
+                <div class="trace-row"><div class="trace-dot">1</div><div><strong>Understand request</strong><div class="muted">Occasion and style</div></div></div>
+                <div class="trace-row"><div class="trace-dot">2</div><div><strong>Search wardrobe</strong><div class="muted">Retrieve owned items</div></div></div>
+                <div class="trace-row"><div class="trace-dot">3</div><div><strong>Build combinations</strong><div class="muted">Pair top, bottom, and shoes</div></div></div>
+                <div class="trace-row"><div class="trace-dot">4</div><div><strong>Evaluate recommendation</strong><div class="muted">Check fit and ownership</div></div></div>
+              </div>
+
+              <div class="developer-panel" id="developerPanel">
+                <hr style="border:0;border-top:1px solid var(--border);margin:18px 0"/>
+                <h3>Developer metrics</h3>
+                <div class="metric"><span>Retrieved items</span><strong>6</strong></div>
+                <div class="metric"><span>Latency</span><strong>2.8 s</strong></div>
+                <div class="metric"><span>Estimated cost</span><strong>$0.004</strong></div>
+                <div class="metric"><span>Evaluator</span><strong style="color:var(--success)">PASS</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="history" class="page">
+        <div class="topbar">
+          <div class="title"><h2>Recommendation History</h2><p>Review outfits created from your wardrobe.</p></div>
+        </div>
+        <div class="card">
+          <div class="history-list">
+            <div class="history-card"><div><strong>Office presentation</strong><div class="muted">White shirt · Black trousers · Black shoes</div></div><span>Today</span></div>
+            <div class="history-card"><div><strong>Casual dinner</strong><div class="muted">Black T-shirt · Blue jeans · White sneakers</div></div><span>Yesterday</span></div>
+            <div class="history-card"><div><strong>Weekend coffee</strong><div class="muted">Blue polo · Khaki chinos · White sneakers</div></div><span>Last week</span></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const wardrobe = [
+      ["👔","White Oxford Shirt","Formal","Top"],
+      ["👕","Black T-shirt","Casual","Top"],
+      ["👕","Blue Polo","Smart casual","Top"],
+      ["🧥","Beige Sweater","Casual","Top"],
+      ["🧥","Black Blazer","Formal","Outerwear"],
+      ["👖","Black Trousers","Formal","Bottom"],
+      ["👖","Blue Jeans","Casual","Bottom"],
+      ["👖","Khaki Chinos","Smart casual","Bottom"],
+      ["👟","White Sneakers","Casual","Shoes"],
+      ["👞","Black Loafers","Formal","Shoes"],
+      ["👞","Brown Shoes","Smart casual","Shoes"]
+    ];
+
+    function renderWardrobe(){
+      const grid = document.getElementById("wardrobeGrid");
+      grid.innerHTML = wardrobe.map((item, idx)=>`
+        <div class="wardrobe-card">
+          <div class="item-image">${item[0]}<div class="fav">${idx%3===0?"♥":"♡"}</div></div>
+          <div class="item-body">
+            <strong>${item[1]}</strong>
+            <small>${item[3]}</small><br/>
+            <span class="tag">${item[2]}</span>
+          </div>
+        </div>
+      `).join("");
+    }
+    renderWardrobe();
+
+    document.querySelectorAll(".nav-btn").forEach(btn=>{
+      btn.addEventListener("click",()=>showPage(btn.dataset.page));
+    });
+
+    function showPage(id){
+      document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
+      document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active", b.dataset.page===id));
+      document.getElementById(id).classList.add("active");
+      window.scrollTo({top:0,behavior:"smooth"});
+    }
+
+    function preset(text){
+      document.getElementById("heroPrompt").value = text;
+    }
+
+    function askFromHero(){
+      const text = document.getElementById("heroPrompt").value.trim();
+      showPage("stylist");
+      if(text){
+        document.getElementById("chatInput").value = text;
+        setTimeout(sendChat,250);
+      }
+    }
+
+    function simulateUpload(){
+      document.getElementById("dropzone").style.display="none";
+      document.getElementById("previewWrap").style.display="block";
+      document.getElementById("idleAnalysis").style.display="none";
+      document.getElementById("analysis").classList.add("active");
+    }
+
+    function saveItem(){
+      wardrobe.unshift(["👕","Light Blue Shirt","Smart casual","Top"]);
+      renderWardrobe();
+      toast("Clothing item saved to your wardrobe.");
+      showPage("wardrobe");
+    }
+
+    function sendChat(){
+      const input = document.getElementById("chatInput");
+      const text = input.value.trim();
+      if(!text) return;
+      const log = document.getElementById("chatLog");
+      log.insertAdjacentHTML("beforeend",`<div class="bubble user">${escapeHtml(text)}</div>`);
+      input.value="";
+
+      const thinking = document.createElement("div");
+      thinking.className="bubble ai";
+      thinking.innerHTML=`<div class="thinking"><span>Searching your wardrobe</span><i></i><i></i><i></i></div>`;
+      log.appendChild(thinking);
+      log.scrollTop=log.scrollHeight;
+
+      setTimeout(()=>{
+        thinking.remove();
+        const incomplete = /only|one shirt|missing|no pants|no shoes/i.test(text);
+        if(incomplete){
+          log.insertAdjacentHTML("beforeend",`
+            <div class="bubble ai" style="max-width:95%">
+              <div class="outfit-card" style="background:#fff8e5">
+                <strong>I can build part of the look.</strong>
+                <p>Your blue shirt works as the top, but your wardrobe is missing a bottom and shoes.</p>
+                <div class="reason-list">
+                  <div>✓ <span>Available: blue shirt</span></div>
+                  <div>○ <span>Missing: bottom</span></div>
+                  <div>○ <span>Missing: shoes</span></div>
+                </div>
+                <p class="muted">General pairing advice: dark trousers and white or brown shoes would match well. These are not currently in your wardrobe.</p>
+              </div>
+            </div>`);
+        }else{
+          log.insertAdjacentHTML("beforeend",`
+            <div class="bubble ai" style="max-width:95%">
+              <div class="outfit-card">
+                <strong>✨ Recommended outfit</strong>
+                <div class="outfit-grid">
+                  <div class="piece"><div class="emoji">👔</div><small>White Oxford</small></div>
+                  <div class="piece"><div class="emoji">👖</div><small>Black Trousers</small></div>
+                  <div class="piece"><div class="emoji">👞</div><small>Black Loafers</small></div>
+                </div>
+                <div class="score"><span>Outfit score</span><strong>9.4 / 10</strong></div>
+                <div class="reason-list">
+                  <div>✓ <span>Professional and suitable for the occasion</span></div>
+                  <div>✓ <span>Neutral colors work well together</span></div>
+                  <div>✓ <span>Every item exists in your wardrobe</span></div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:14px">
+                  <button class="btn" onclick="toast('Another outfit would be generated here.')">Generate another</button>
+                  <button class="btn primary" onclick="toast('Outfit saved to history.')">Save outfit</button>
+                </div>
+              </div>
+            </div>`);
+        }
+        log.scrollTop=log.scrollHeight;
+      },1100);
+    }
+
+    function toggleDeveloper(){
+      document.getElementById("developerPanel").classList.toggle("active");
+    }
+
+    function toast(message){
+      const el = document.getElementById("toast");
+      el.textContent=message;
+      el.style.display="block";
+      setTimeout(()=>el.style.display="none",2200);
+    }
+
+    function escapeHtml(str){
+      return str.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));
+    }
+
+    document.getElementById("chatInput").addEventListener("keydown",e=>{
+      if(e.key==="Enter") sendChat();
+    });
+  </script>
+</body>
+</html>

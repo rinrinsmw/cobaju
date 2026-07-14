@@ -1,0 +1,24 @@
+
+# moon
+.moon/cache
+.moon/docker
+.corepack/
+.uv-cache/
+
+# Frontend
+node_modules/
+dist/
+
+# Backend
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local configuration
+.env
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

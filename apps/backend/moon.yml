@@ -1,0 +1,25 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "python"
+
+tasks:
+  dev:
+    command: "uv run uvicorn app.main:app --reload"
+    env:
+      UV_CACHE_DIR: "../../.uv-cache"
+    preset: "server"
+
+  test:
+    command: "uv run pytest"
+    env:
+      UV_CACHE_DIR: "../../.uv-cache"
+    inputs:
+      - "app/**/*.py"
+      - "tests/**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  check:
+    deps:
+      - "test"
+    command: "noop"

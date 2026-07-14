@@ -1,0 +1,29 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+
+tasks:
+  dev:
+    command: "corepack pnpm@10.12.1 dev"
+    env:
+      COREPACK_HOME: "../../.corepack"
+    preset: "server"
+
+  build:
+    command: "corepack pnpm@10.12.1 build"
+    env:
+      COREPACK_HOME: "../../.corepack"
+    inputs:
+      - "src/**/*"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - "vite.config.ts"
+    outputs:
+      - "dist"
+
+  check:
+    deps:
+      - "build"
+    command: "noop"
