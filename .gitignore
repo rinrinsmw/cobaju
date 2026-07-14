@@ -22,3 +22,7 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Personal AI development workflow
+AGENTS.md
+ROADMAP.md
