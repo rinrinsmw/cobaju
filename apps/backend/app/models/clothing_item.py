@@ -55,6 +55,7 @@ class ClothingItem(SQLModel, table=True):
     )
     color: str = Field(max_length=50)
     description: str | None = Field(default=None, max_length=500)
+    original_image_path: str | None = Field(default=None, max_length=500)
     processing_status: ProcessingStatus = Field(
         default=ProcessingStatus.COMPLETED,
         sa_column=Column(

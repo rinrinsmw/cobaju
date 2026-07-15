@@ -93,4 +93,5 @@ class ClothingItemRead(ClothingItemFields):
     """Safe wardrobe item data returned to its owner."""
 
     id: int
+    original_image_path: str | None
     processing_status: ProcessingStatus

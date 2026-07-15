@@ -99,9 +99,30 @@ def update_clothing_item(
     return item
 
 
-def delete_clothing_item(session: Session, user_id: int, item_id: int) -> None:
+def attach_image_to_clothing_item(
+    session: Session,
+    item: ClothingItem,
+    original_image_path: str,
+) -> ClothingItem:
+    """Record a safely stored original image and mark it ready for Phase 5."""
+
+    item.original_image_path = original_image_path
+    item.processing_status = ProcessingStatus.PENDING
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def delete_clothing_item(
+    session: Session,
+    user_id: int,
+    item_id: int,
+) -> str | None:
     """Delete an item only after resolving it through its trusted owner."""
 
     item = get_owned_clothing_item(session, user_id, item_id)
+    original_image_path = item.original_image_path
     session.delete(item)
     session.commit()
+    return original_image_path

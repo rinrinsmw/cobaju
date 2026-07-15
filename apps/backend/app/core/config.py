@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr = SecretStr("")
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
+    upload_directory: str = "./uploads"
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",
@@ -49,6 +50,15 @@ class Settings(BaseSettings):
 
         absolute_path = (BACKEND_DIR / database_path).resolve()
         return f"{prefix}{absolute_path}"
+
+    @property
+    def resolved_upload_directory(self) -> Path:
+        """Resolve relative upload directories from the backend directory."""
+
+        upload_path = Path(self.upload_directory)
+        if upload_path.is_absolute():
+            return upload_path
+        return (BACKEND_DIR / upload_path).resolve()
 
 
 @lru_cache

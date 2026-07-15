@@ -1,9 +1,9 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 3: environment
+the approved React frontend and a FastAPI backend through Phase 4: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
-ownership-safe wardrobe metadata CRUD.
+ownership-safe wardrobe metadata CRUD with validated local image uploads.
 
 ## Repository layout
 
@@ -36,7 +36,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 3 defaults. Before running the
+The environment file contains local Phase 4 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -129,6 +129,20 @@ Supported categories are `top`, `bottom`, `dress`, `outerwear`, `shoes`,
 `bag`, and `accessory`. Manually created items have a server-controlled
 `completed` processing status. Each user may have at most 15 completed items.
 
+Upload one original image to an item you own:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/image \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -F 'image=@/absolute/path/to/clothing.jpg'
+```
+
+Uploads accept JPG, PNG, and WebP files up to 5 MB. The backend verifies the
+file content, generates a unique filename, stores it below
+`apps/backend/uploads/<user-id>/`, records the relative original image path,
+and changes the item status to `pending`. An item accepts only one original
+image in Phase 4. Vision analysis does not begin until Phase 5.
+
 The applications can also be started with their native package managers:
 
 ```bash
@@ -152,4 +166,5 @@ moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. Phase 3 uses a local SQLite file and needs no external database.
+test suite. Phase 4 uses local SQLite and local image storage and needs no
+external services.
