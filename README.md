@@ -1,8 +1,9 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 2: environment
-settings, SQLModel, SQLite, Alembic migrations, and JWT authentication.
+the approved React frontend and a FastAPI backend through Phase 3: environment
+settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
+ownership-safe wardrobe metadata CRUD.
 
 ## Repository layout
 
@@ -35,7 +36,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 2 defaults. Before running the
+The environment file contains local Phase 3 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -105,6 +106,29 @@ curl http://127.0.0.1:8000/auth/me \
   -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
 ```
 
+## Wardrobe API
+
+All wardrobe routes require the Bearer token returned by login. Create a
+manually confirmed clothing item:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wardrobe/items \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Blue Oxford Shirt","category":"top","color":"light blue","description":"Smart-casual cotton shirt"}'
+```
+
+List the authenticated user's items:
+
+```bash
+curl http://127.0.0.1:8000/wardrobe/items \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+Supported categories are `top`, `bottom`, `dress`, `outerwear`, `shoes`,
+`bag`, and `accessory`. Manually created items have a server-controlled
+`completed` processing status. Each user may have at most 15 completed items.
+
 The applications can also be started with their native package managers:
 
 ```bash
@@ -128,4 +152,4 @@ moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. Phase 2 uses a local SQLite file and needs no external database.
+test suite. Phase 3 uses a local SQLite file and needs no external database.

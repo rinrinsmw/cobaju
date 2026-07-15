@@ -1,0 +1,107 @@
+"""Business logic for ownership-safe wardrobe management."""
+
+from sqlalchemy import func
+from sqlmodel import Session, select
+
+from app.models.clothing_item import ClothingItem, ProcessingStatus
+from app.schemas.wardrobe import ClothingItemCreate, ClothingItemUpdate
+
+
+MAX_CONFIRMED_ITEMS = 15
+
+
+class ClothingItemNotFoundError(Exception):
+    """Raised when an item is missing or is not owned by the current user."""
+
+
+class WardrobeLimitReachedError(Exception):
+    """Raised when a user already owns the maximum confirmed items."""
+
+
+def count_confirmed_items(session: Session, user_id: int) -> int:
+    """Count completed items belonging to one user."""
+
+    statement = (
+        select(func.count())
+        .select_from(ClothingItem)
+        .where(
+            ClothingItem.user_id == user_id,
+            ClothingItem.processing_status == ProcessingStatus.COMPLETED,
+        )
+    )
+    return session.exec(statement).one()
+
+
+def create_clothing_item(
+    session: Session,
+    user_id: int,
+    item_create: ClothingItemCreate,
+) -> ClothingItem:
+    """Create a confirmed manual item when the user's wardrobe has space."""
+
+    if count_confirmed_items(session, user_id) >= MAX_CONFIRMED_ITEMS:
+        raise WardrobeLimitReachedError
+
+    item = ClothingItem(
+        user_id=user_id,
+        processing_status=ProcessingStatus.COMPLETED,
+        **item_create.model_dump(),
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def list_clothing_items(session: Session, user_id: int) -> list[ClothingItem]:
+    """Return only items owned by one authenticated user."""
+
+    statement = (
+        select(ClothingItem)
+        .where(ClothingItem.user_id == user_id)
+        .order_by(ClothingItem.id)
+    )
+    return list(session.exec(statement).all())
+
+
+def get_owned_clothing_item(
+    session: Session,
+    user_id: int,
+    item_id: int,
+) -> ClothingItem:
+    """Find an item using both its ID and trusted owner ID."""
+
+    statement = select(ClothingItem).where(
+        ClothingItem.id == item_id,
+        ClothingItem.user_id == user_id,
+    )
+    item = session.exec(statement).first()
+    if item is None:
+        raise ClothingItemNotFoundError
+    return item
+
+
+def update_clothing_item(
+    session: Session,
+    user_id: int,
+    item_id: int,
+    item_update: ClothingItemUpdate,
+) -> ClothingItem:
+    """Apply only explicitly supplied metadata fields to an owned item."""
+
+    item = get_owned_clothing_item(session, user_id, item_id)
+    for field_name, value in item_update.model_dump(exclude_unset=True).items():
+        setattr(item, field_name, value)
+
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def delete_clothing_item(session: Session, user_id: int, item_id: int) -> None:
+    """Delete an item only after resolving it through its trusted owner."""
+
+    item = get_owned_clothing_item(session, user_id, item_id)
+    session.delete(item)
+    session.commit()

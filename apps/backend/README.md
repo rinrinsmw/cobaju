@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 2:
+This FastAPI service contains Cobaju's backend through Phase 3:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -10,9 +10,32 @@ This FastAPI service contains Cobaju's backend through Phase 2:
 - a user table managed by Alembic;
 - Argon2 password hashing and short-lived JWT access tokens;
 - registration, login, and protected current-user routes;
-- pytest coverage for settings, sessions, health, and authentication.
+- a clothing item table with category and processing-status enums;
+- authenticated wardrobe create, list, detail, partial update, and delete routes;
+- ownership checks that hide other users' items;
+- a maximum of 15 completed items per user;
+- pytest coverage for settings, sessions, health, authentication, CRUD,
+  authorization, validation, and wardrobe limits.
 
-Wardrobe models and AI functionality intentionally begin in later phases.
+Image upload and AI functionality intentionally begin in later phases.
+
+## Wardrobe endpoints
+
+All routes use the authenticated user from the JWT and never accept a client
+`user_id`:
+
+```text
+POST   /wardrobe/items
+GET    /wardrobe/items
+GET    /wardrobe/items/{item_id}
+PATCH  /wardrobe/items/{item_id}
+DELETE /wardrobe/items/{item_id}
+```
+
+Create and update bodies use `name`, `category`, `color`, and optional
+`description`. Categories are `top`, `bottom`, `dress`, `outerwear`, `shoes`,
+`bag`, and `accessory`. A manual create is immediately `completed`; processing
+status is returned by the API but cannot be set by the client.
 
 ## Run from the repository root
 
