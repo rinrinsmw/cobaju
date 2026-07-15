@@ -1,15 +1,18 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's Phase 1 backend foundation:
+This FastAPI service contains Cobaju's backend through Phase 2:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
 - a local SQLite database;
 - Alembic migration configuration and an initial revision;
 - API and database health checks;
-- pytest coverage for settings, sessions, and health routes.
+- a user table managed by Alembic;
+- Argon2 password hashing and short-lived JWT access tokens;
+- registration, login, and protected current-user routes;
+- pytest coverage for settings, sessions, health, and authentication.
 
-Domain models and authentication intentionally begin in later phases.
+Wardrobe models and AI functionality intentionally begin in later phases.
 
 ## Run from the repository root
 
@@ -31,6 +34,10 @@ Run the backend tests:
 ```bash
 moon run backend:test
 ```
+
+The API requires `JWT_SECRET_KEY` in the repository root `.env` before login
+tokens can be issued. Copy `.env.example` and replace its placeholder with a
+private random value such as the output of `openssl rand -hex 32`.
 
 Native uv commands are also available:
 

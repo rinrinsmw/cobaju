@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
     backend_host: str = "127.0.0.1"
     backend_port: int = 8000
     database_url: str = "sqlite:///./cobaju.db"
+    jwt_secret_key: SecretStr = SecretStr("")
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",

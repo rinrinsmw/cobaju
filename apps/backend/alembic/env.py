@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from app.core.config import get_settings
+from app.models import User  # noqa: F401 - registers model metadata for Alembic
 
 
 config = context.config
