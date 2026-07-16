@@ -34,9 +34,30 @@ def test_absolute_upload_directory_is_not_changed(tmp_path: Path) -> None:
     assert settings.resolved_upload_directory == upload_directory
 
 
+def test_relative_chroma_directory_is_resolved_from_backend_directory() -> None:
+    settings = Settings(chroma_directory="./custom-chroma")
+
+    assert settings.resolved_chroma_directory == BACKEND_DIR / "custom-chroma"
+
+
+def test_absolute_chroma_directory_is_not_changed(tmp_path: Path) -> None:
+    chroma_directory = tmp_path / "chroma"
+    settings = Settings(chroma_directory=str(chroma_directory))
+
+    assert settings.resolved_chroma_directory == chroma_directory
+
+
 def test_celery_retry_settings_cannot_be_negative() -> None:
     with pytest.raises(ValidationError):
         Settings(celery_task_max_retries=-1)
 
     with pytest.raises(ValidationError):
         Settings(celery_task_retry_delay_seconds=-1)
+
+
+def test_wardrobe_search_limit_must_be_between_one_and_fifteen() -> None:
+    with pytest.raises(ValidationError):
+        Settings(wardrobe_search_limit=0)
+
+    with pytest.raises(ValidationError):
+        Settings(wardrobe_search_limit=16)

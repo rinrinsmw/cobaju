@@ -1,11 +1,12 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 6: environment
+the approved React frontend and a FastAPI backend through Phase 7: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
 AI clothing guardrails and vision metadata analysis executed by a Celery worker
-through Redis.
+through Redis. Confirmed clothing is embedded through OpenRouter, persisted in
+Chroma, and available through ownership-filtered semantic search.
 
 ## Repository layout
 
@@ -39,7 +40,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 6 defaults. Before running the
+The environment file contains local Phase 7 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -174,8 +175,9 @@ curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/analyze \
   -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
 ```
 
-Configure `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`, and
-`OPENROUTER_VISION_MODEL` in `.env` first. Both models must support image input
+Configure `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`,
+`OPENROUTER_VISION_MODEL`, and `OPENROUTER_EMBEDDING_MODEL` in `.env` first.
+The two vision models must support image input
 and strict structured outputs. The guardrail uses temperature `0.0`; accepted
 images receive validated draft `name`, `category`, `color`, and `description`
 metadata from the vision model at temperature `0.1`.
@@ -215,6 +217,29 @@ failure restores the item to `pending`, so the request can safely be retried.
 Set `LANGFUSE_ENABLED=true` and provide Langfuse credentials to trace the
 workflow; telemetry is off by default.
 
+## Semantic wardrobe search
+
+Every manually created confirmed item is indexed immediately. An analyzed item
+is indexed only after the owner confirms its metadata. Editing confirmed
+metadata replaces its vector record, deleting the item removes the record, and
+attaching a new image removes the record until the updated analysis is
+confirmed again.
+Confirmed items created before Phase 7 are indexed lazily on their owner's
+first search.
+
+```bash
+curl --get http://127.0.0.1:8000/wardrobe/items/search \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  --data-urlencode 'q=blue shirt for the office' \
+  --data-urlencode 'category=top' \
+  --data-urlencode 'limit=5'
+```
+
+`category` and `limit` are optional. Chroma always filters on the trusted user
+ID from the JWT before ranking results. Chroma persists below
+`apps/backend/chroma/` by default. Retrieval spans are sent to Langfuse only
+when telemetry is enabled.
+
 The applications can also be started with their native package managers:
 
 ```bash
@@ -239,8 +264,8 @@ moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. Tests run Celery task logic eagerly with a mocked vision provider,
-so they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Phase 6 does not introduce Chroma, RAG, agents, or MCP. Full
+test suite. Tests use mocked vision and deterministic embedding providers, so
+they require no running Redis server, OpenRouter credits, or Langfuse
+connection. Phase 7 does not introduce agents or MCP. Full
 frontend API and authentication integration remains Phase 12; the approved
 prototype's existing processing view is unchanged in this phase.

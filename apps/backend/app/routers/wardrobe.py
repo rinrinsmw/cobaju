@@ -14,14 +14,15 @@ from sqlmodel import Session
 
 from app.core.config import get_settings
 from app.database import get_session
-from app.dependencies import get_current_user
-from app.models.clothing_item import ClothingItem, ProcessingStatus
+from app.dependencies import get_current_user, get_wardrobe_vector_store
+from app.models.clothing_item import ClothingCategory, ClothingItem, ProcessingStatus
 from app.models.user import User
 from app.schemas.wardrobe import (
     ClothingItemCreate,
     ClothingItemRead,
     ClothingItemUpdate,
     ClothingProcessingStatusRead,
+    WardrobeSearchResultRead,
 )
 from app.services.image_uploads import (
     ImageTooLargeError,
@@ -42,11 +43,13 @@ from app.services.wardrobe import (
     create_clothing_item,
     delete_clothing_item,
     get_owned_clothing_item,
+    list_confirmed_clothing_items,
     list_clothing_items,
     mark_item_processing,
     restore_item_pending,
     update_clothing_item,
 )
+from app.services.vector_store import WardrobeVectorError, WardrobeVectorStore
 
 
 router = APIRouter(prefix="/wardrobe/items", tags=["wardrobe"])
@@ -72,11 +75,21 @@ def not_found_response() -> HTTPException:
     )
 
 
+def retrieval_unavailable_response() -> HTTPException:
+    """Hide provider and storage details behind one safe API response."""
+
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Wardrobe retrieval is unavailable",
+    )
+
+
 @router.post("", response_model=ClothingItemRead, status_code=status.HTTP_201_CREATED)
 def create_item(
     item_create: ClothingItemCreate,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
 ) -> ClothingItem:
     """Create manually confirmed metadata for the authenticated user."""
 
@@ -85,12 +98,15 @@ def create_item(
             session,
             require_user_id(current_user),
             item_create,
+            vector_store,
         )
     except WardrobeLimitReachedError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Wardrobe limit of 15 confirmed items reached",
         ) from error
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
 
 
 @router.get("", response_model=list[ClothingItemRead])
@@ -101,6 +117,55 @@ def list_items(
     """List the authenticated user's wardrobe in creation order."""
 
     return list_clothing_items(session, require_user_id(current_user))
+
+
+@router.get("/search", response_model=list[WardrobeSearchResultRead])
+def search_items(
+    q: str,
+    category: ClothingCategory | None = None,
+    limit: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
+) -> list[WardrobeSearchResultRead]:
+    """Semantically search only the authenticated user's confirmed items."""
+
+    normalized_query = q.strip()
+    if not normalized_query:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Search query must not be blank",
+        )
+    if limit is not None and not 1 <= limit <= 15:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Search limit must be between 1 and 15",
+        )
+    if vector_store is None:
+        raise retrieval_unavailable_response()
+    try:
+        user_id = require_user_id(current_user)
+        vector_store.index_missing_items(
+            list_confirmed_clothing_items(session, user_id)
+        )
+        return [
+            WardrobeSearchResultRead(
+                item_id=result.item_id,
+                name=result.name,
+                category=result.category,
+                color=result.color,
+                description=result.description,
+                distance=result.distance,
+            )
+            for result in vector_store.search(
+                query=normalized_query,
+                user_id=user_id,
+                category=category,
+                limit=limit,
+            )
+        ]
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
 
 
 @router.get("/{item_id}", response_model=ClothingItemRead)
@@ -131,6 +196,7 @@ async def upload_item_image(
     image: UploadFile = File(...),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
 ) -> ClothingItem:
     """Store one validated original image for an owned clothing item."""
 
@@ -155,7 +221,9 @@ async def upload_item_image(
             settings.resolved_upload_directory,
             user_id,
         )
-        updated_item = attach_image_to_clothing_item(session, item, stored_path)
+        updated_item = attach_image_to_clothing_item(
+            session, item, stored_path, vector_store
+        )
         image_attached = True
         return updated_item
     except UnsupportedImageError as error:
@@ -179,6 +247,8 @@ async def upload_item_image(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not store image",
         ) from error
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
     finally:
         if stored_path is not None and not image_attached:
             try:
@@ -289,6 +359,7 @@ def confirm_item_metadata(
     item_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
 ) -> ClothingItem:
     """Confirm an analyzed draft after the user has reviewed its metadata."""
 
@@ -298,7 +369,7 @@ def confirm_item_metadata(
             require_user_id(current_user),
             item_id,
         )
-        return confirm_analyzed_item(session, item)
+        return confirm_analyzed_item(session, item, vector_store)
     except ClothingItemNotFoundError as error:
         raise not_found_response() from error
     except InvalidProcessingStateError as error:
@@ -311,6 +382,8 @@ def confirm_item_metadata(
             status_code=status.HTTP_409_CONFLICT,
             detail="Wardrobe limit of 15 confirmed items reached",
         ) from error
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
 
 
 @router.patch("/{item_id}", response_model=ClothingItemRead)
@@ -319,6 +392,7 @@ def update_item(
     item_update: ClothingItemUpdate,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
 ) -> ClothingItem:
     """Partially update metadata on an owned item."""
 
@@ -328,9 +402,12 @@ def update_item(
             require_user_id(current_user),
             item_id,
             item_update,
+            vector_store,
         )
     except ClothingItemNotFoundError as error:
         raise not_found_response() from error
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -338,6 +415,7 @@ def delete_item(
     item_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    vector_store: WardrobeVectorStore | None = Depends(get_wardrobe_vector_store),
 ) -> Response:
     """Delete an owned item and return an empty success response."""
 
@@ -346,9 +424,12 @@ def delete_item(
             session,
             require_user_id(current_user),
             item_id,
+            vector_store,
         )
     except ClothingItemNotFoundError as error:
         raise not_found_response() from error
+    except WardrobeVectorError as error:
+        raise retrieval_unavailable_response() from error
 
     if original_image_path is not None:
         try:

@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 6:
+This FastAPI service contains Cobaju's backend through Phase 7:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -25,11 +25,18 @@ This FastAPI service contains Cobaju's backend through Phase 6:
 - Redis-backed Celery dispatch with limited retry behavior;
 - an ownership-safe clothing-processing status endpoint;
 - a Moonrepo worker task;
+- OpenRouter text-embedding configuration and a mockable embedding provider;
+- persistent Chroma records for confirmed clothing metadata;
+- vector updates and deletions tied to wardrobe lifecycle changes;
+- lazy backfill of confirmed items created before Phase 7;
+- semantic search with mandatory user and optional category filters;
+- optional Langfuse wardrobe-retrieval spans;
 - pytest coverage for settings, sessions, health, authentication, CRUD,
   authorization, validation, wardrobe limits, storage, mocked AI calls, queue
-  failures, status polling, and task retries.
+  failures, status polling, task retries, semantic ranking, vector lifecycle,
+  retrieval authorization, and category filters.
 
-Chroma, RAG, stylist agents, and MCP remain out of scope.
+Stylist agents and MCP remain out of scope.
 
 ## Wardrobe endpoints
 
@@ -39,6 +46,7 @@ All routes use the authenticated user from the JWT and never accept a client
 ```text
 POST   /wardrobe/items
 GET    /wardrobe/items
+GET    /wardrobe/items/search?q=QUERY&category=OPTIONAL&limit=OPTIONAL
 GET    /wardrobe/items/{item_id}
 PATCH  /wardrobe/items/{item_id}
 DELETE /wardrobe/items/{item_id}
@@ -81,6 +89,19 @@ input and strict structured outputs. Langfuse tracing is disabled by default;
 enable it with `LANGFUSE_ENABLED=true` and the standard Langfuse key and host
 variables. Image bytes and secrets are not included in trace inputs.
 
+Set `OPENROUTER_EMBEDDING_MODEL` to a text embedding model available through
+OpenRouter. Confirmed records are stored in `CHROMA_DIRECTORY` under
+`CHROMA_COLLECTION_NAME`. Search embeds the query, filters Chroma by the
+authenticated user's ID, optionally filters by category, and returns no more
+than 15 structured results. `WARDROBE_SEARCH_LIMIT` supplies the default.
+
+```bash
+curl --get http://127.0.0.1:8000/wardrobe/items/search \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  --data-urlencode 'q=smart blue office shirt' \
+  --data-urlencode 'category=top'
+```
+
 ## Run from the repository root
 
 Install dependencies and apply migrations:
@@ -113,6 +134,12 @@ Run only the mocked clothing-analysis and Phase 6 processing tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_clothing_analysis.py
+```
+
+Run only the Phase 7 retrieval tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_retrieval.py
 ```
 
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login

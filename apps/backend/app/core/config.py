@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_guardrail_model: str = ""
     openrouter_vision_model: str = ""
+    openrouter_embedding_model: str = ""
     openrouter_timeout_seconds: float = 60.0
     guardrail_temperature: float = 0.0
     vision_temperature: float = 0.1
@@ -37,6 +38,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     celery_task_max_retries: int = Field(default=2, ge=0)
     celery_task_retry_delay_seconds: int = Field(default=5, ge=0)
+    chroma_directory: str = "./chroma"
+    chroma_collection_name: str = "wardrobe_items"
+    wardrobe_search_limit: int = Field(default=5, ge=1, le=15)
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",
@@ -73,6 +77,15 @@ class Settings(BaseSettings):
         if upload_path.is_absolute():
             return upload_path
         return (BACKEND_DIR / upload_path).resolve()
+
+    @property
+    def resolved_chroma_directory(self) -> Path:
+        """Resolve relative Chroma storage from the backend directory."""
+
+        chroma_path = Path(self.chroma_directory)
+        if chroma_path.is_absolute():
+            return chroma_path
+        return (BACKEND_DIR / chroma_path).resolve()
 
 
 @lru_cache

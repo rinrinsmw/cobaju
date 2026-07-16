@@ -1,5 +1,7 @@
 """Business logic for ownership-safe wardrobe management."""
 
+from typing import Protocol
+
 from sqlalchemy import func
 from sqlmodel import Session, select
 
@@ -26,6 +28,14 @@ class InvalidProcessingStateError(Exception):
     """Raised when an item cannot perform the requested workflow transition."""
 
 
+class WardrobeIndex(Protocol):
+    """Minimal vector-index behavior needed by wardrobe lifecycle changes."""
+
+    def upsert_item(self, item: ClothingItem) -> None: ...
+
+    def delete_item(self, item_id: int) -> None: ...
+
+
 def count_confirmed_items(session: Session, user_id: int) -> int:
     """Count completed items belonging to one user."""
 
@@ -44,6 +54,7 @@ def create_clothing_item(
     session: Session,
     user_id: int,
     item_create: ClothingItemCreate,
+    vector_index: WardrobeIndex | None = None,
 ) -> ClothingItem:
     """Create a confirmed manual item when the user's wardrobe has space."""
 
@@ -56,7 +67,14 @@ def create_clothing_item(
         **item_create.model_dump(),
     )
     session.add(item)
-    session.commit()
+    session.flush()
+    try:
+        if vector_index is not None:
+            vector_index.upsert_item(item)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(item)
     return item
 
@@ -67,6 +85,23 @@ def list_clothing_items(session: Session, user_id: int) -> list[ClothingItem]:
     statement = (
         select(ClothingItem)
         .where(ClothingItem.user_id == user_id)
+        .order_by(ClothingItem.id)
+    )
+    return list(session.exec(statement).all())
+
+
+def list_confirmed_clothing_items(
+    session: Session,
+    user_id: int,
+) -> list[ClothingItem]:
+    """Return confirmed items eligible for one user's retrieval index."""
+
+    statement = (
+        select(ClothingItem)
+        .where(
+            ClothingItem.user_id == user_id,
+            ClothingItem.processing_status == ProcessingStatus.COMPLETED,
+        )
         .order_by(ClothingItem.id)
     )
     return list(session.exec(statement).all())
@@ -94,6 +129,7 @@ def update_clothing_item(
     user_id: int,
     item_id: int,
     item_update: ClothingItemUpdate,
+    vector_index: WardrobeIndex | None = None,
 ) -> ClothingItem:
     """Apply only explicitly supplied metadata fields to an owned item."""
 
@@ -102,7 +138,17 @@ def update_clothing_item(
         setattr(item, field_name, value)
 
     session.add(item)
-    session.commit()
+    session.flush()
+    try:
+        if vector_index is not None and item.id is not None:
+            if item.processing_status == ProcessingStatus.COMPLETED:
+                vector_index.upsert_item(item)
+            else:
+                vector_index.delete_item(item.id)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(item)
     return item
 
@@ -111,14 +157,26 @@ def attach_image_to_clothing_item(
     session: Session,
     item: ClothingItem,
     original_image_path: str,
+    vector_index: WardrobeIndex | None = None,
 ) -> ClothingItem:
     """Record a safely stored original image and mark it ready for Phase 5."""
 
+    # Pending uploads are not searchable. Remove the confirmed vector before
+    # changing database state so an index failure cannot leave a broken image
+    # reference committed by an API request that reports failure.
+    if vector_index is not None and item.id is not None:
+        vector_index.delete_item(item.id)
     item.original_image_path = original_image_path
     item.analysis_completed = False
     item.processing_status = ProcessingStatus.PENDING
     session.add(item)
-    session.commit()
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        if vector_index is not None:
+            vector_index.upsert_item(item)
+        raise
     session.refresh(item)
     return item
 
@@ -193,7 +251,11 @@ def reject_item_image(session: Session, item: ClothingItem) -> str | None:
     return rejected_path
 
 
-def confirm_analyzed_item(session: Session, item: ClothingItem) -> ClothingItem:
+def confirm_analyzed_item(
+    session: Session,
+    item: ClothingItem,
+    vector_index: WardrobeIndex | None = None,
+) -> ClothingItem:
     """Confirm a reviewed draft after the user has optionally edited it."""
 
     if (
@@ -206,7 +268,14 @@ def confirm_analyzed_item(session: Session, item: ClothingItem) -> ClothingItem:
         raise WardrobeLimitReachedError
     item.processing_status = ProcessingStatus.COMPLETED
     session.add(item)
-    session.commit()
+    session.flush()
+    try:
+        if vector_index is not None:
+            vector_index.upsert_item(item)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(item)
     return item
 
@@ -215,11 +284,14 @@ def delete_clothing_item(
     session: Session,
     user_id: int,
     item_id: int,
+    vector_index: WardrobeIndex | None = None,
 ) -> str | None:
     """Delete an item only after resolving it through its trusted owner."""
 
     item = get_owned_clothing_item(session, user_id, item_id)
     original_image_path = item.original_image_path
+    if vector_index is not None:
+        vector_index.delete_item(item_id)
     session.delete(item)
     session.commit()
     return original_image_path

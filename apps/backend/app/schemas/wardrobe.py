@@ -107,6 +107,13 @@ class ClothingProcessingStatusRead(BaseModel):
     needs_confirmation: bool
 
 
+class WardrobeSearchResultRead(ClothingItemFields):
+    """Safe metadata and similarity distance for one wardrobe match."""
+
+    item_id: int
+    distance: float
+
+
 class ClothingGuardrailResult(BaseModel):
     """Strict result returned by the inexpensive clothing guardrail."""
 
