@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 7:
+This FastAPI service contains Cobaju's backend through Phase 8:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -31,12 +31,45 @@ This FastAPI service contains Cobaju's backend through Phase 7:
 - lazy backfill of confirmed items created before Phase 7;
 - semantic search with mandatory user and optional category filters;
 - optional Langfuse wardrobe-retrieval spans;
+- normal ownership-safe Python services for stylist-facing wardrobe operations;
+- a standalone FastMCP server with four structured wardrobe tools;
+- trusted host-supplied MCP user context that is absent from model inputs;
+- confirmed ownership validation for recommendation candidates;
 - pytest coverage for settings, sessions, health, authentication, CRUD,
   authorization, validation, wardrobe limits, storage, mocked AI calls, queue
   failures, status polling, task retries, semantic ranking, vector lifecycle,
-  retrieval authorization, and category filters.
+  retrieval authorization, category filters, MCP schemas, tool delegation, and
+  cross-user recommendation rejection.
 
-Stylist agents and MCP remain out of scope.
+Stylist agents, evaluation, and persistent recommendation history remain out of
+scope.
+
+## Wardrobe MCP server
+
+Phase 8 exposes the tested service layer through exactly four tools:
+
+```text
+search_wardrobe
+get_clothing_item
+list_wardrobe_categories
+save_recommendation
+```
+
+The wrappers do not accept `user_id`. Start one stdio server process with the
+authenticated user's ID supplied by the trusted host environment:
+
+```bash
+MCP_USER_ID=1 moon run backend:mcp
+```
+
+`search_wardrobe` needs the OpenRouter embedding settings described below. The
+server can still list categories, get confirmed items, and validate a
+recommendation when semantic retrieval is not configured.
+
+`save_recommendation` rejects missing, unconfirmed, cross-user, duplicate, or
+invalid IDs. It returns the validated owned item records and `persisted: false`.
+The recommendation-history table and durable saving are deliberately deferred
+to Phase 11.
 
 ## Wardrobe endpoints
 
@@ -142,6 +175,12 @@ Run only the Phase 7 retrieval tests:
 uv run --project apps/backend pytest apps/backend/tests/test_retrieval.py
 ```
 
+Run only the Phase 8 service and MCP tool tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_mcp.py
+```
+
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login
 tokens can be issued. Copy `.env.example` and replace its placeholder with a
 private random value such as the output of `openssl rand -hex 32`.
@@ -153,4 +192,5 @@ uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 uv run --project apps/backend pytest apps/backend/tests
 uv run --project apps/backend uvicorn --app-dir apps/backend app.main:app --reload
 uv run --project apps/backend celery --workdir apps/backend -A app.celery_app:celery_app worker --loglevel=INFO
+MCP_USER_ID=1 uv run --directory apps/backend python -m app.mcp_server
 ```

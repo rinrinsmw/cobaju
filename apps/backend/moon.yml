@@ -38,6 +38,12 @@ tasks:
       UV_CACHE_DIR: "../../.uv-cache"
     preset: "server"
 
+  mcp:
+    command: "uv run python -m app.mcp_server"
+    env:
+      UV_CACHE_DIR: "../../.uv-cache"
+    preset: "server"
+
   check:
     deps:
       - "test"

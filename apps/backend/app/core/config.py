@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     chroma_directory: str = "./chroma"
     chroma_collection_name: str = "wardrobe_items"
     wardrobe_search_limit: int = Field(default=5, ge=1, le=15)
+    mcp_user_id: int | None = Field(default=None, ge=1)
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",

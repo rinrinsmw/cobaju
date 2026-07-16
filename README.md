@@ -1,12 +1,14 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 7: environment
+the approved React frontend and a FastAPI backend through Phase 8: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
 AI clothing guardrails and vision metadata analysis executed by a Celery worker
 through Redis. Confirmed clothing is embedded through OpenRouter, persisted in
 Chroma, and available through ownership-filtered semantic search.
+The same tested wardrobe operations are exposed as four structured MCP tools
+using a trusted server-side user context.
 
 ## Repository layout
 
@@ -92,6 +94,16 @@ Celery worker:
 ```bash
 moon run backend:worker
 ```
+
+Wardrobe MCP server for an authenticated local user (stdio transport):
+
+```bash
+MCP_USER_ID=1 moon run backend:mcp
+```
+
+The launcher or future authenticated backend flow must supply `MCP_USER_ID`.
+It is deliberately absent from every tool schema, so a model cannot select or
+change the user whose wardrobe is being accessed.
 
 Check the API at <http://127.0.0.1:8000/health>. A successful response is:
 
@@ -240,6 +252,31 @@ ID from the JWT before ranking results. Chroma persists below
 `apps/backend/chroma/` by default. Retrieval spans are sent to Langfuse only
 when telemetry is enabled.
 
+## Wardrobe MCP tools
+
+Phase 8 adds one local MCP server with these tools:
+
+```text
+search_wardrobe
+get_clothing_item
+list_wardrobe_categories
+save_recommendation
+```
+
+All tools return structured Pydantic outputs. They reuse normal Python services
+that can be tested without MCP. Searches return only confirmed items and recheck
+vector matches against current database ownership. Item detail and category
+listing apply the same confirmed-item boundary.
+
+`save_recommendation` validates that every selected ID is unique, confirmed,
+and owned by the trusted user. Its Phase 8 response has `persisted: false`:
+database-backed recommendation history belongs to Phase 11 and is intentionally
+not introduced early.
+
+Semantic search requires `OPENROUTER_API_KEY` and
+`OPENROUTER_EMBEDDING_MODEL`. The other three MCP tools remain usable without
+an embedding provider.
+
 The applications can also be started with their native package managers:
 
 ```bash
@@ -263,9 +300,16 @@ moon run backend:test
 moon run :check
 ```
 
+Run only the Phase 8 service and MCP tool tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_mcp.py
+```
+
 The project-wide `:check` target runs the frontend production build and backend
 test suite. Tests use mocked vision and deterministic embedding providers, so
 they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Phase 7 does not introduce agents or MCP. Full
+connection. Phase 8 does not introduce the stylist agent, evaluator, or
+recommendation-history table. Full
 frontend API and authentication integration remains Phase 12; the approved
 prototype's existing processing view is unchanged in this phase.
