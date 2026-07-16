@@ -5,24 +5,28 @@ from collections.abc import Generator
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.config import Settings
 from app.dependencies import (
     get_chat_scope_classifier,
     get_current_user,
+    get_outfit_evaluator,
     get_stylist_runner,
 )
 from app.main import app
-from app.models.clothing_item import ClothingCategory
+from app.models.clothing_item import ClothingCategory, ClothingItem
 from app.models.user import User
 from app.schemas.chat import (
     ChatScopeDecision,
     MissingCategoryGuidance,
+    OutfitEvaluation,
     RecommendedOwnedItem,
     RequiredCategory,
     StylistResponse,
 )
-from app.services.chat import StylistGroundingError, create_stylist_response
+from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import contains_prompt_injection
 from app.services.stylist_agent import (
     StylistAgentError,
@@ -47,17 +51,40 @@ class FakeRunner:
         self.outcome = outcome
         self.calls: list[tuple[str, int | None]] = []
 
-    async def run(self, message: str, current_user: User) -> StylistRunOutcome:
+    async def run(
+        self,
+        message: str,
+        current_user: User,
+        feedback: str | None = None,
+    ) -> StylistRunOutcome:
         self.calls.append((message, current_user.id))
         if self.outcome is None:
             raise StylistAgentError("fake failure")
         return self.outcome
 
 
+class FakeEvaluator:
+    async def evaluate(
+        self,
+        user_request: str,
+        candidate: StylistResponse,
+        owned_item_evidence: list[ClothingItem],
+    ) -> OutfitEvaluation:
+        return OutfitEvaluation(
+            accepted=True,
+            occasion_appropriate=True,
+            complete=True,
+            colors_compatible=True,
+            styles_compatible=True,
+            feedback="Candidate passes all checks.",
+        )
+
+
 def settings() -> Settings:
     return Settings(
         openrouter_chat_guardrail_model="guardrail-model",
         openrouter_stylist_model="stylist-model",
+        openrouter_evaluator_model="evaluator-model",
         langfuse_enabled=False,
     )
 
@@ -112,13 +139,33 @@ def run_workflow(
     message: str = "Build an office outfit from my wardrobe",
 ) -> StylistResponse:
     async def run() -> StylistResponse:
-        return await create_stylist_response(
-            message=message,
-            current_user=current_user(),
-            classifier=classifier,
-            runner=runner,
-            settings=settings(),
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
         )
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            session.add(current_user())
+            session.add(
+                ClothingItem(
+                    id=12,
+                    user_id=7,
+                    name="Blue shirt",
+                    category=ClothingCategory.TOP,
+                    color="blue",
+                )
+            )
+            session.commit()
+            return await create_stylist_response(
+                message=message,
+                current_user=current_user(),
+                classifier=classifier,
+                runner=runner,
+                evaluator=FakeEvaluator(),
+                session=session,
+                settings=settings(),
+            )
 
     return anyio.run(run)
 
@@ -217,7 +264,7 @@ def test_ungrounded_or_mismatched_owned_ids_are_blocked(
         )
     )
 
-    with pytest.raises(StylistGroundingError):
+    with pytest.raises(StylistAgentError):
         run_workflow(classifier, runner)
 
 
@@ -262,6 +309,7 @@ def chat_client() -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_current_user] = current_user
     app.dependency_overrides[get_chat_scope_classifier] = lambda: classifier
     app.dependency_overrides[get_stylist_runner] = lambda: runner
+    app.dependency_overrides[get_outfit_evaluator] = lambda: FakeEvaluator()
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()

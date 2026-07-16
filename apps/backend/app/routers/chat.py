@@ -1,17 +1,21 @@
 """Authenticated wardrobe-stylist chat endpoint."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import Session
 
 from app.core.config import get_settings
+from app.database import get_session
 from app.dependencies import (
     get_chat_scope_classifier,
     get_current_user,
+    get_outfit_evaluator,
     get_stylist_runner,
 )
 from app.models.user import User
 from app.schemas.chat import ChatRequest, StylistResponse
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import ChatGuardrailError, ChatScopeClassifier
+from app.services.outfit_evaluator import OutfitEvaluator
 from app.services.stylist_agent import StylistAgentError, StylistRunner
 
 
@@ -24,6 +28,8 @@ async def recommend_outfit(
     current_user: User = Depends(get_current_user),
     classifier: ChatScopeClassifier = Depends(get_chat_scope_classifier),
     runner: StylistRunner = Depends(get_stylist_runner),
+    evaluator: OutfitEvaluator = Depends(get_outfit_evaluator),
+    session: Session = Depends(get_session),
 ) -> StylistResponse:
     """Guard one request, then run one wardrobe-grounded stylist agent."""
 
@@ -33,6 +39,8 @@ async def recommend_outfit(
             current_user=current_user,
             classifier=classifier,
             runner=runner,
+            evaluator=evaluator,
+            session=session,
             settings=get_settings(),
         )
     except (ChatGuardrailError, StylistAgentError) as error:

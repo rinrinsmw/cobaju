@@ -43,7 +43,12 @@ class StylistRunOutcome:
 class StylistRunner(Protocol):
     """Mockable boundary around the paid, tool-using agent run."""
 
-    async def run(self, message: str, current_user: User) -> StylistRunOutcome: ...
+    async def run(
+        self,
+        message: str,
+        current_user: User,
+        feedback: str | None = None,
+    ) -> StylistRunOutcome: ...
 
 
 def _parse_tool_result(result: object) -> Any:
@@ -116,7 +121,12 @@ class OpenAIAgentsStylistRunner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def run(self, message: str, current_user: User) -> StylistRunOutcome:
+    async def run(
+        self,
+        message: str,
+        current_user: User,
+        feedback: str | None = None,
+    ) -> StylistRunOutcome:
         api_key = self.settings.openrouter_api_key.get_secret_value()
         model_name = self.settings.openrouter_stylist_model
         if not api_key or not model_name:
@@ -160,9 +170,15 @@ class OpenAIAgentsStylistRunner:
                     mcp_servers=[wardrobe_server],
                     output_type=StylistResponse,
                 )
+                agent_input = message
+                if feedback:
+                    agent_input = (
+                        f"{message}\n\nThe previous candidate was rejected. Correct these "
+                        f"issues and try once more:\n{feedback}"
+                    )
                 result = await Runner.run(
                     agent,
-                    message,
+                    agent_input,
                     max_turns=self.settings.stylist_max_turns,
                     hooks=hooks,
                     run_config=RunConfig(

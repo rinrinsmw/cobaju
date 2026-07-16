@@ -61,7 +61,7 @@ class MissingCategoryGuidance(BaseModel):
 
 
 class StylistResponse(BaseModel):
-    """The only response schema returned by the Phase 9 chat endpoint."""
+    """The stable response schema returned by the stylist chat endpoint."""
 
     status: Literal["recommendation", "redirected", "rejected"]
     message: str = Field(min_length=1, max_length=1200)
@@ -80,3 +80,17 @@ class StylistResponse(BaseModel):
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("owned item IDs must be unique")
         return value
+
+
+class OutfitEvaluation(BaseModel):
+    """Strict verdict returned by the separate outfit evaluator agent."""
+
+    accepted: bool
+    occasion_appropriate: bool
+    complete: bool
+    colors_compatible: bool
+    styles_compatible: bool
+    unsupported_claims: list[str] = Field(default_factory=list, max_length=10)
+    feedback: str = Field(min_length=1, max_length=600)
+
+    model_config = ConfigDict(extra="forbid")

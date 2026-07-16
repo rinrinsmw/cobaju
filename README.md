@@ -1,7 +1,7 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 9: environment
+the approved React frontend and a FastAPI backend through Phase 10: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
 AI clothing guardrails and vision metadata analysis executed by a Celery worker
@@ -12,6 +12,9 @@ using a trusted server-side user context.
 One authenticated Wardrobe Stylist Agent now guards chat scope, plans outfit
 categories, calls those MCP tools, and separates validated owned IDs from generic
 missing-category advice.
+Every candidate now passes through a separate temperature-zero evaluator and a
+database-backed deterministic validator. A rejected candidate receives at most
+one stylist retry; a second failure is never returned to the user.
 
 ## Repository layout
 
@@ -45,7 +48,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 9 defaults. Before running the
+The environment file contains local Phase 10 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -284,9 +287,10 @@ an embedding provider.
 
 ## Wardrobe stylist API
 
-Set `OPENROUTER_CHAT_GUARDRAIL_MODEL` and `OPENROUTER_STYLIST_MODEL` in `.env`.
-The first model needs strict JSON output; the stylist also needs Chat Completions
-tool calling through OpenRouter.
+Set `OPENROUTER_CHAT_GUARDRAIL_MODEL`, `OPENROUTER_STYLIST_MODEL`, and
+`OPENROUTER_EVALUATOR_MODEL` in `.env`. The guardrail and evaluator need strict
+JSON output; the stylist also needs Chat Completions tool calling through
+OpenRouter.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \
@@ -298,6 +302,10 @@ curl -X POST http://127.0.0.1:8000/chat/recommendations \
 The endpoint rejects explicit prompt injection before an AI call, redirects
 unrelated requests, caps turns and tool calls, and exposes owned items only when
 the MCP server accepted the same IDs. Missing categories are clearly non-owned.
+Before a response is returned, the evaluator checks occasion, completeness,
+color, style, and unsupported claims at temperature `0.0`. The deterministic
+validator then rechecks confirmed ownership directly from SQLite, category
+claims, and the `Not owned:` label. Rejected candidates are retried once only.
 
 The applications can also be started with their native package managers:
 
@@ -334,10 +342,15 @@ Run only the Phase 9 chat tests:
 uv run --project apps/backend pytest apps/backend/tests/test_chat.py
 ```
 
+Run only the Phase 10 evaluation and retry tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py
+```
+
 The project-wide `:check` target runs the frontend production build and backend
 test suite. Tests use mocked vision and deterministic embedding providers, so
 they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Phase 9 does not introduce the evaluator, retry workflow, or
-recommendation-history table. Full
+connection. Phase 10 does not introduce the recommendation-history table. Full
 frontend API and authentication integration remains Phase 12; the approved
 prototype's existing processing view is unchanged in this phase.

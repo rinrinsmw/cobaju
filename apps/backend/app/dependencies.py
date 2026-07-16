@@ -14,6 +14,7 @@ from app.database import get_session
 from app.models.user import User
 from app.services.mcp_client import open_user_scoped_mcp_session
 from app.services.chat_guardrails import OpenRouterChatScopeClassifier
+from app.services.outfit_evaluator import OpenAIAgentsOutfitEvaluator
 from app.services.stylist_agent import OpenAIAgentsStylistRunner
 from app.services.vector_store import WardrobeVectorStore, create_wardrobe_vector_store
 
@@ -33,6 +34,13 @@ def get_stylist_runner() -> OpenAIAgentsStylistRunner:
     """Return the configured Agents SDK runner; tests may override it."""
 
     return OpenAIAgentsStylistRunner(get_settings())
+
+
+@lru_cache
+def get_outfit_evaluator() -> OpenAIAgentsOutfitEvaluator:
+    """Return the separate evaluator agent; tests may override it."""
+
+    return OpenAIAgentsOutfitEvaluator(get_settings())
 
 
 @lru_cache

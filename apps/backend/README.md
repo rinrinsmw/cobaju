@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 9:
+This FastAPI service contains Cobaju's backend through Phase 10:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -47,21 +47,32 @@ This FastAPI service contains Cobaju's backend through Phase 9:
 - clearly separated incomplete-wardrobe guidance;
 - one structured chat response and optional Langfuse recommendation traces;
 - mocked chat, grounding, limit, incomplete-wardrobe, and API tests.
+- a separate temperature-0.0 outfit evaluator for occasion, completeness,
+  color, style, and unsupported-claim checks;
+- database-backed final ID, ownership, category, and missing-item label checks;
+- hallucination outcomes in optional Langfuse validation observations;
+- exactly one retry after evaluator or deterministic rejection;
+- mocked evaluation, cross-user, invalid-ID, unsupported-claim, and retry tests.
 
-The Phase 10 evaluator/retry workflow and persistent recommendation history
-remain out of scope.
+Persistent recommendation history remains out of scope until Phase 11.
 
 ## Stylist chat endpoint
 
-Phase 9 adds authenticated `POST /chat/recommendations`. Configure
+The authenticated `POST /chat/recommendations` workflow now includes Phase 10.
+Configure
 `OPENROUTER_CHAT_GUARDRAIL_MODEL` for strict JSON output and
 `OPENROUTER_STYLIST_MODEL` for strict JSON plus Chat Completions tool calling.
-The classifier runs at temperature `0.0`; the stylist runs at `0.5`.
+Configure `OPENROUTER_EVALUATOR_MODEL` for strict structured output. The
+classifier and evaluator run at temperature `0.0`; the stylist runs at `0.5`.
 
 Explicit prompt injection is rejected before a paid call. Allowed requests run
 one stylist against the trusted current user's MCP process. Owned selections are
 returned only when `save_recommendation` validated the same IDs. Unavailable
 categories are returned separately as generic, non-owned guidance.
+Each candidate is compared with confirmed database evidence by the evaluator,
+then deterministic code rechecks item IDs, ownership, categories, and explicit
+`Not owned:` labels. A rejection is sent back to the stylist once. If the retry
+also fails, the endpoint returns its existing generic HTTP 503 response.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \
@@ -219,6 +230,12 @@ Run only the Phase 9 chat and stylist tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_chat.py
+```
+
+Run only the Phase 10 evaluator and deterministic validation tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py
 ```
 
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login
