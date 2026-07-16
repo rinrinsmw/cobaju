@@ -94,4 +94,22 @@ class ClothingItemRead(ClothingItemFields):
 
     id: int
     original_image_path: str | None
+    analysis_completed: bool
     processing_status: ProcessingStatus
+
+
+class ClothingGuardrailResult(BaseModel):
+    """Strict result returned by the inexpensive clothing guardrail."""
+
+    is_clothing: bool
+    reason: str = Field(min_length=1, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ClothingMetadata(ClothingItemFields):
+    """Stable, editable metadata generated only from visible image evidence."""
+
+    # Strict structured-output providers require every property to be present.
+    # The model may still return null when no supported description is visible.
+    description: str | None = Field(max_length=500)

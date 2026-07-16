@@ -12,7 +12,7 @@ from fastapi import (
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.database import get_session
 from app.dependencies import get_current_user
 from app.models.clothing_item import ClothingItem
@@ -28,10 +28,18 @@ from app.services.image_uploads import (
     delete_stored_image,
     save_original_image,
 )
+from app.services.clothing_analysis import (
+    ClothingAnalysisError,
+    ClothingVisionProvider,
+    analyze_clothing_item,
+)
+from app.services.openrouter import OpenRouterVisionProvider
 from app.services.wardrobe import (
     ClothingItemNotFoundError,
+    InvalidProcessingStateError,
     WardrobeLimitReachedError,
     attach_image_to_clothing_item,
+    confirm_analyzed_item,
     create_clothing_item,
     delete_clothing_item,
     get_owned_clothing_item,
@@ -41,6 +49,14 @@ from app.services.wardrobe import (
 
 
 router = APIRouter(prefix="/wardrobe/items", tags=["wardrobe"])
+
+
+def get_clothing_vision_provider(
+    settings: Settings = Depends(get_settings),
+) -> ClothingVisionProvider:
+    """Build the real provider at the API edge so tests can override it."""
+
+    return OpenRouterVisionProvider(settings)
 
 
 def require_user_id(current_user: User) -> int:
@@ -177,6 +193,102 @@ async def upload_item_image(
             except OSError:
                 pass
         await image.close()
+
+
+@router.post("/{item_id}/analyze", response_model=ClothingItemRead)
+def analyze_item_image(
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+    provider: ClothingVisionProvider = Depends(get_clothing_vision_provider),
+) -> ClothingItem:
+    """Synchronously guard and analyze one owned uploaded image."""
+
+    try:
+        item = get_owned_clothing_item(
+            session,
+            require_user_id(current_user),
+            item_id,
+        )
+    except ClothingItemNotFoundError as error:
+        raise not_found_response() from error
+
+    settings = get_settings()
+    if item.original_image_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Clothing item has no image to analyze",
+        )
+    image_path = (
+        settings.resolved_upload_directory / item.original_image_path
+    ).resolve()
+    if (
+        not image_path.is_relative_to(settings.resolved_upload_directory)
+        or not image_path.is_file()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored image is unavailable",
+        )
+
+    try:
+        analyzed_item, rejected_path = analyze_clothing_item(
+            session,
+            item,
+            image_path,
+            provider,
+            settings,
+        )
+    except InvalidProcessingStateError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Clothing item is not ready for analysis",
+        ) from error
+    except ClothingAnalysisError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Clothing analysis could not be completed",
+        ) from error
+
+    if rejected_path is not None:
+        try:
+            delete_stored_image(settings.resolved_upload_directory, rejected_path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Image must contain one clearly visible clothing item",
+        )
+    return analyzed_item
+
+
+@router.post("/{item_id}/confirm", response_model=ClothingItemRead)
+def confirm_item_metadata(
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ClothingItem:
+    """Confirm an analyzed draft after the user has reviewed its metadata."""
+
+    try:
+        item = get_owned_clothing_item(
+            session,
+            require_user_id(current_user),
+            item_id,
+        )
+        return confirm_analyzed_item(session, item)
+    except ClothingItemNotFoundError as error:
+        raise not_found_response() from error
+    except InvalidProcessingStateError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Clothing item has no analyzed draft to confirm",
+        ) from error
+    except WardrobeLimitReachedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Wardrobe limit of 15 confirmed items reached",
+        ) from error
 
 
 @router.patch("/{item_id}", response_model=ClothingItemRead)

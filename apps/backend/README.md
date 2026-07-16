@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 4:
+This FastAPI service contains Cobaju's backend through Phase 5:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -18,10 +18,14 @@ This FastAPI service contains Cobaju's backend through Phase 4:
 - JPG, PNG, and WebP content validation with a 5 MB limit;
 - UUID-based filenames in configurable user-specific local directories;
 - database path/status updates and cleanup after failed uploads or deletion;
+- OpenRouter settings with separate guardrail and vision models;
+- a synchronous, mockable clothing guardrail and metadata analysis service;
+- strict metadata validation and an explicit review/confirmation workflow;
+- optional nested Langfuse clothing-analysis observations;
 - pytest coverage for settings, sessions, health, authentication, CRUD,
-  authorization, validation, wardrobe limits, and local image storage.
+  authorization, validation, wardrobe limits, storage, and mocked AI calls.
 
-Vision analysis and other AI functionality intentionally begin in Phase 5.
+Celery, Redis, Chroma, stylist agents, and MCP remain out of scope.
 
 ## Wardrobe endpoints
 
@@ -35,6 +39,8 @@ GET    /wardrobe/items/{item_id}
 PATCH  /wardrobe/items/{item_id}
 DELETE /wardrobe/items/{item_id}
 POST   /wardrobe/items/{item_id}/image
+POST   /wardrobe/items/{item_id}/analyze
+POST   /wardrobe/items/{item_id}/confirm
 ```
 
 Create and update bodies use `name`, `category`, `color`, and optional
@@ -47,6 +53,19 @@ PNG, or WebP file up to 5 MB, verifies its binary signature, stores it under
 the configured `UPLOAD_DIRECTORY`, and changes the item status to `pending`.
 Client filenames are never used for storage. A second upload to the same item
 is rejected with HTTP 409.
+
+Analysis first runs a temperature-0.0 clothing guardrail. Rejected images are
+detached and deleted. Accepted images go to the configured vision model at
+temperature 0.1 and produce only `name`, `category`, `color`, and optional
+`description`. Pydantic validates these fields before saving. The owner can
+edit the pending draft through `PATCH`, then call `confirm` to mark it
+`completed`. `analysis_completed` prevents confirmation before AI analysis.
+
+For real calls, set `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`, and
+`OPENROUTER_VISION_MODEL` in the root `.env`. Both models must support image
+input and strict structured outputs. Langfuse tracing is disabled by default;
+enable it with `LANGFUSE_ENABLED=true` and the standard Langfuse key and host
+variables. Image bytes and secrets are not included in trace inputs.
 
 ## Run from the repository root
 
@@ -67,6 +86,12 @@ Run the backend tests:
 
 ```bash
 moon run backend:test
+```
+
+Run only the mocked Phase 5 tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_clothing_analysis.py
 ```
 
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login

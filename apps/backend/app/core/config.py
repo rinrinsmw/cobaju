@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
     upload_directory: str = "./uploads"
+    openrouter_api_key: SecretStr = SecretStr("")
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_guardrail_model: str = ""
+    openrouter_vision_model: str = ""
+    openrouter_timeout_seconds: float = 60.0
+    guardrail_temperature: float = 0.0
+    vision_temperature: float = 0.1
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: SecretStr = SecretStr("")
+    langfuse_base_url: str = "https://cloud.langfuse.com"
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",

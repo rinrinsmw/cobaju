@@ -1,9 +1,10 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 4: environment
+the approved React frontend and a FastAPI backend through Phase 5: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
-ownership-safe wardrobe metadata CRUD with validated local image uploads.
+ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
+AI clothing guardrails and vision metadata analysis.
 
 ## Repository layout
 
@@ -36,7 +37,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 4 defaults. Before running the
+The environment file contains local Phase 5 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -141,7 +142,33 @@ Uploads accept JPG, PNG, and WebP files up to 5 MB. The backend verifies the
 file content, generates a unique filename, stores it below
 `apps/backend/uploads/<user-id>/`, records the relative original image path,
 and changes the item status to `pending`. An item accepts only one original
-image in Phase 4. Vision analysis does not begin until Phase 5.
+image.
+
+Analyze the uploaded image synchronously:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/analyze \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+Configure `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`, and
+`OPENROUTER_VISION_MODEL` in `.env` first. Both models must support image input
+and strict structured outputs. The guardrail uses temperature `0.0`; accepted
+images receive validated draft `name`, `category`, `color`, and `description`
+metadata from the vision model at temperature `0.1`.
+
+The analyzed item remains `pending` with `analysis_completed: true`. Review it
+and optionally edit it with `PATCH /wardrobe/items/ITEM_ID`, then confirm it:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/confirm \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+Confirmation changes the status to `completed`. Rejected non-clothing images
+are detached and deleted. Transient AI failures keep the valid image for a
+retry and set the item to `failed`. Set `LANGFUSE_ENABLED=true` and provide
+Langfuse credentials to trace the workflow; telemetry is off by default.
 
 The applications can also be started with their native package managers:
 
@@ -166,5 +193,6 @@ moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. Phase 4 uses local SQLite and local image storage and needs no
-external services.
+test suite. Tests mock the vision provider and require no OpenRouter credits or
+Langfuse connection. Phase 5 does not introduce Redis, Celery, Chroma, agents,
+or MCP.

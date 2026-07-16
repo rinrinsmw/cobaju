@@ -98,6 +98,7 @@ def test_user_can_create_list_read_update_and_delete_item(
         "color": "light blue",
         "description": "A smart-casual cotton shirt.",
         "original_image_path": None,
+        "analysis_completed": False,
         "processing_status": "completed",
     }
     assert "user_id" not in create_response.json()

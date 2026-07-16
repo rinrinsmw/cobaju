@@ -4,7 +4,11 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models.clothing_item import ClothingItem, ProcessingStatus
-from app.schemas.wardrobe import ClothingItemCreate, ClothingItemUpdate
+from app.schemas.wardrobe import (
+    ClothingItemCreate,
+    ClothingItemUpdate,
+    ClothingMetadata,
+)
 
 
 MAX_CONFIRMED_ITEMS = 15
@@ -16,6 +20,10 @@ class ClothingItemNotFoundError(Exception):
 
 class WardrobeLimitReachedError(Exception):
     """Raised when a user already owns the maximum confirmed items."""
+
+
+class InvalidProcessingStateError(Exception):
+    """Raised when an item cannot perform the requested workflow transition."""
 
 
 def count_confirmed_items(session: Session, user_id: int) -> int:
@@ -107,7 +115,82 @@ def attach_image_to_clothing_item(
     """Record a safely stored original image and mark it ready for Phase 5."""
 
     item.original_image_path = original_image_path
+    item.analysis_completed = False
     item.processing_status = ProcessingStatus.PENDING
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def mark_item_processing(session: Session, item: ClothingItem) -> ClothingItem:
+    """Move an uploaded item into synchronous vision processing."""
+
+    if item.original_image_path is None or item.processing_status not in {
+        ProcessingStatus.PENDING,
+        ProcessingStatus.FAILED,
+    }:
+        raise InvalidProcessingStateError
+    item.analysis_completed = False
+    item.processing_status = ProcessingStatus.PROCESSING
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def save_generated_metadata(
+    session: Session,
+    item: ClothingItem,
+    metadata: ClothingMetadata,
+) -> ClothingItem:
+    """Save validated AI metadata as an unconfirmed, user-editable draft."""
+
+    for field_name, value in metadata.model_dump().items():
+        setattr(item, field_name, value)
+    item.analysis_completed = True
+    item.processing_status = ProcessingStatus.PENDING
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def mark_item_failed(session: Session, item: ClothingItem) -> ClothingItem:
+    """Record an analysis failure while retaining the image for a retry."""
+
+    item.processing_status = ProcessingStatus.FAILED
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def reject_item_image(session: Session, item: ClothingItem) -> str | None:
+    """Detach a rejected image so non-clothing content is not kept."""
+
+    rejected_path = item.original_image_path
+    item.original_image_path = None
+    item.analysis_completed = False
+    item.processing_status = ProcessingStatus.FAILED
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return rejected_path
+
+
+def confirm_analyzed_item(session: Session, item: ClothingItem) -> ClothingItem:
+    """Confirm a reviewed draft after the user has optionally edited it."""
+
+    if (
+        item.original_image_path is None
+        or not item.analysis_completed
+        or item.processing_status != ProcessingStatus.PENDING
+    ):
+        raise InvalidProcessingStateError
+    if count_confirmed_items(session, item.user_id) >= MAX_CONFIRMED_ITEMS:
+        raise WardrobeLimitReachedError
+    item.processing_status = ProcessingStatus.COMPLETED
     session.add(item)
     session.commit()
     session.refresh(item)
