@@ -95,15 +95,11 @@ Celery worker:
 moon run backend:worker
 ```
 
-Wardrobe MCP server for an authenticated local user (stdio transport):
-
-```bash
-MCP_USER_ID=1 moon run backend:mcp
-```
-
-The launcher or future authenticated backend flow must supply `MCP_USER_ID`.
-It is deliberately absent from every tool schema, so a model cannot select or
-change the user whose wardrobe is being accessed.
+The wardrobe MCP stdio server is launched internally only by an endpoint or
+service that explicitly requests the authenticated MCP session dependency. The
+dependency takes `current_user.id` from the verified JWT, injects it into one
+child process, and closes that process with the client session. Existing
+authenticated routes do not launch MCP.
 
 Check the API at <http://127.0.0.1:8000/health>. A successful response is:
 
@@ -267,6 +263,12 @@ All tools return structured Pydantic outputs. They reuse normal Python services
 that can be tested without MCP. Searches return only confirmed items and recheck
 vector matches against current database ownership. Item detail and category
 listing apply the same confirmed-item boundary.
+
+MCP identity is a private per-process value created by the backend. It is not a
+Pydantic setting and must never be accepted from an HTTP request, MCP tool
+argument, or shared `.env`. Startup fails if the identity is missing, malformed,
+or does not identify an existing SQLite user. One stdio process and client
+session belong to exactly one authenticated user.
 
 `save_recommendation` validates that every selected ID is unique, confirmed,
 and owned by the trusted user. Its Phase 8 response has `persisted: false`:

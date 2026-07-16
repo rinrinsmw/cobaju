@@ -5,9 +5,19 @@ from types import SimpleNamespace
 
 import anyio
 import pytest
+from fastapi.dependencies.utils import get_dependant
+from fastapi.routing import APIRoute
 from mcp.server.fastmcp.exceptions import ToolError
 from sqlmodel import Session, SQLModel, create_engine
 
+from app import mcp_server as mcp_server_module
+from app.core.config import Settings
+from app.core.mcp_identity import (
+    MCP_RUNTIME_USER_ID_ENV,
+    McpRuntimeIdentityError,
+)
+from app.dependencies import get_current_user, get_current_user_mcp_session
+from app.main import app
 from app.mcp_server import (
     WardrobeMcpContext,
     get_clothing_item,
@@ -21,7 +31,12 @@ from app.models.clothing_item import (
     ClothingItem,
     ProcessingStatus,
 )
+from app.models.user import User
 from app.schemas.mcp import SaveRecommendationInput
+from app.services.mcp_client import (
+    build_user_scoped_mcp_parameters,
+    open_user_scoped_mcp_session,
+)
 from app.services.vector_store import WardrobeSearchResult
 from app.services.wardrobe import ClothingItemNotFoundError
 from app.services.wardrobe_tools import (
@@ -82,6 +97,14 @@ def add_item(
     session.commit()
     session.refresh(item)
     return item
+
+
+def add_user(session: Session, email: str) -> User:
+    user = User(email=email, hashed_password="test-only-hash")
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
 def vector_match(item: ClothingItem, distance: float) -> WardrobeSearchResult:
@@ -215,7 +238,7 @@ def test_save_recommendation_validates_every_owned_item_without_persisting_histo
         service.save_recommendation(
             SaveRecommendationInput(
                 user_request="office outfit",
-                item_ids=[foreign_item.id or 0],
+                item_ids=[own_item.id or 0, foreign_item.id or 0],
                 explanation="Must be rejected.",
             )
         )
@@ -225,6 +248,137 @@ def test_save_recommendation_validates_every_owned_item_without_persisting_histo
             item_ids=[own_item.id or 0, own_item.id or 0],
             explanation="Duplicate item IDs are invalid.",
         )
+
+
+@pytest.mark.parametrize("raw_user_id", [None, "not-a-number", "0", "-1"])
+def test_mcp_startup_rejects_missing_or_invalid_runtime_identity(
+    wardrobe_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_user_id: str | None,
+) -> None:
+    monkeypatch.setattr(mcp_server_module, "engine", wardrobe_session.get_bind())
+    if raw_user_id is None:
+        monkeypatch.delenv(MCP_RUNTIME_USER_ID_ENV, raising=False)
+    else:
+        monkeypatch.setenv(MCP_RUNTIME_USER_ID_ENV, raw_user_id)
+
+    async def start_server_lifespan() -> None:
+        async with mcp_server_module.wardrobe_mcp_lifespan(mcp):
+            pass
+
+    with pytest.raises(McpRuntimeIdentityError):
+        anyio.run(start_server_lifespan)
+
+
+def test_mcp_startup_rejects_nonexistent_sqlite_user(
+    wardrobe_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_server_module, "engine", wardrobe_session.get_bind())
+    monkeypatch.setenv(MCP_RUNTIME_USER_ID_ENV, "999")
+
+    async def start_server_lifespan() -> None:
+        async with mcp_server_module.wardrobe_mcp_lifespan(mcp):
+            pass
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        anyio.run(start_server_lifespan)
+
+
+def test_mcp_dependency_is_opt_in_and_uses_verified_current_user(
+    wardrobe_session: Session,
+) -> None:
+    current_user = add_user(wardrobe_session, "dependency@example.com")
+    settings = Settings(
+        database_url=str(wardrobe_session.get_bind().url),
+        openrouter_api_key="",
+        openrouter_embedding_model="",
+    )
+    parameters = build_user_scoped_mcp_parameters(current_user, settings)
+    dependency = get_dependant(path="/mcp-only", call=get_current_user_mcp_session)
+
+    assert dependency.dependencies[0].call is get_current_user
+    assert parameters.env is not None
+    assert parameters.env[MCP_RUNTIME_USER_ID_ENV] == str(current_user.id)
+    assert all(
+        dependency.call is not get_current_user_mcp_session
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        for dependency in route.dependant.dependencies
+    )
+
+
+def test_two_user_scoped_stdio_sessions_are_isolated(
+    wardrobe_session: Session,
+    tmp_path: object,
+) -> None:
+    first_user = add_user(wardrobe_session, "first@example.com")
+    second_user = add_user(wardrobe_session, "second@example.com")
+    assert first_user.id is not None
+    assert second_user.id is not None
+    first_item = add_item(
+        wardrobe_session,
+        user_id=first_user.id,
+        name="First User Shirt",
+        category=ClothingCategory.TOP,
+    )
+    second_item = add_item(
+        wardrobe_session,
+        user_id=second_user.id,
+        name="Second User Shoes",
+        category=ClothingCategory.SHOES,
+    )
+    settings = Settings(
+        database_url=str(wardrobe_session.get_bind().url),
+        openrouter_api_key="",
+        openrouter_embedding_model="",
+        langfuse_enabled=False,
+        chroma_directory=f"{tmp_path}/mcp-chroma",
+    )
+
+    async def exercise_sessions() -> None:
+        async with open_user_scoped_mcp_session(first_user, settings) as first_session:
+            async with open_user_scoped_mcp_session(
+                second_user, settings
+            ) as second_session:
+                first_categories = await first_session.call_tool(
+                    "list_wardrobe_categories", {}
+                )
+                second_categories = await second_session.call_tool(
+                    "list_wardrobe_categories", {}
+                )
+                first_foreign_item = await first_session.call_tool(
+                    "get_clothing_item", {"item_id": second_item.id}
+                )
+                second_foreign_item = await second_session.call_tool(
+                    "get_clothing_item", {"item_id": first_item.id}
+                )
+
+                assert first_categories.structuredContent == {
+                    "categories": [{"category": "top", "item_count": 1}]
+                }
+                assert second_categories.structuredContent == {
+                    "categories": [{"category": "shoes", "item_count": 1}]
+                }
+                assert first_foreign_item.isError is True
+                assert second_foreign_item.isError is True
+
+        class ExpectedCallerError(Exception):
+            pass
+
+        try:
+            async with open_user_scoped_mcp_session(first_user, settings):
+                raise ExpectedCallerError
+        except* ExpectedCallerError:
+            pass
+
+        # Opening another process after the exception proves the previous
+        # ClientSession, stdio streams, and child process finished cleanup.
+        async with open_user_scoped_mcp_session(first_user, settings) as session:
+            categories = await session.call_tool("list_wardrobe_categories", {})
+            assert categories.isError is False
+
+    anyio.run(exercise_sessions)
 
 
 def test_mcp_exposes_four_structured_tools_without_user_id_input() -> None:

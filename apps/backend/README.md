@@ -55,12 +55,16 @@ list_wardrobe_categories
 save_recommendation
 ```
 
-The wrappers do not accept `user_id`. Start one stdio server process with the
-authenticated user's ID supplied by the trusted host environment:
+The wrappers do not accept `user_id`. An opt-in FastAPI dependency takes the
+verified `current_user.id` and launches one stdio child process for that user.
+Existing authenticated endpoints do not depend on it and therefore do not
+launch MCP processes.
 
-```bash
-MCP_USER_ID=1 moon run backend:mcp
-```
+The child identity is private runtime state, not application configuration. It
+must never come from an HTTP request, tool argument, or shared `.env`. The MCP
+server rejects a missing, malformed, non-positive, or nonexistent SQLite user
+before exposing tools. Closing the dependency always closes the client session,
+stdio streams, and child process, including when the caller raises an exception.
 
 `search_wardrobe` needs the OpenRouter embedding settings described below. The
 server can still list categories, get confirmed items, and validate a
@@ -192,5 +196,4 @@ uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 uv run --project apps/backend pytest apps/backend/tests
 uv run --project apps/backend uvicorn --app-dir apps/backend app.main:app --reload
 uv run --project apps/backend celery --workdir apps/backend -A app.celery_app:celery_app worker --loglevel=INFO
-MCP_USER_ID=1 uv run --directory apps/backend python -m app.mcp_server
 ```

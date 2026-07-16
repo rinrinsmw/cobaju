@@ -1,15 +1,18 @@
 """Shared FastAPI dependencies."""
 
+from collections.abc import AsyncIterator
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from mcp import ClientSession
 from sqlmodel import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token
 from app.database import get_session
 from app.models.user import User
+from app.services.mcp_client import open_user_scoped_mcp_session
 from app.services.vector_store import WardrobeVectorStore, create_wardrobe_vector_store
 
 
@@ -52,3 +55,12 @@ def get_current_user(
         raise unauthorized
 
     return user
+
+
+async def get_current_user_mcp_session(
+    current_user: User = Depends(get_current_user),
+) -> AsyncIterator[ClientSession]:
+    """Open MCP only for endpoints that explicitly request this dependency."""
+
+    async with open_user_scoped_mcp_session(current_user) as client_session:
+        yield client_session

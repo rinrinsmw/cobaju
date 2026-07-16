@@ -10,8 +10,10 @@ from mcp.server.session import ServerSession
 from sqlmodel import Session
 
 from app.core.config import get_settings
+from app.core.mcp_identity import get_mcp_runtime_user_id
 from app.database import engine
 from app.models.clothing_item import ClothingCategory
+from app.models.user import User
 from app.schemas.mcp import (
     ListWardrobeCategoriesOutput,
     SaveRecommendationInput,
@@ -45,22 +47,23 @@ async def wardrobe_mcp_lifespan(
     """Create one database session and bind it to the trusted configured user."""
 
     del server
-    settings = get_settings()
-    if settings.mcp_user_id is None:
-        raise RuntimeError("MCP_USER_ID must identify the authenticated user")
-
-    vector_store = None
-    if (
-        settings.openrouter_api_key.get_secret_value()
-        and settings.openrouter_embedding_model
-    ):
-        vector_store = create_wardrobe_vector_store(settings)
-
+    user_id = get_mcp_runtime_user_id()
     with Session(engine) as session:
+        if session.get(User, user_id) is None:
+            raise RuntimeError("MCP runtime user does not exist")
+
+        settings = get_settings()
+        vector_store = None
+        if (
+            settings.openrouter_api_key.get_secret_value()
+            and settings.openrouter_embedding_model
+        ):
+            vector_store = create_wardrobe_vector_store(settings)
+
         yield WardrobeMcpContext(
             service=WardrobeToolService(
                 session=session,
-                user_id=settings.mcp_user_id,
+                user_id=user_id,
                 vector_store=vector_store,
             )
         )

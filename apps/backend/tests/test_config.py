@@ -61,10 +61,3 @@ def test_wardrobe_search_limit_must_be_between_one_and_fifteen() -> None:
 
     with pytest.raises(ValidationError):
         Settings(wardrobe_search_limit=16)
-
-
-def test_mcp_user_id_must_be_a_positive_trusted_identifier() -> None:
-    assert Settings(mcp_user_id=1).mcp_user_id == 1
-
-    with pytest.raises(ValidationError):
-        Settings(mcp_user_id=0)
