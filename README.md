@@ -1,7 +1,7 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 8: environment
+the approved React frontend and a FastAPI backend through Phase 9: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
 AI clothing guardrails and vision metadata analysis executed by a Celery worker
@@ -9,6 +9,9 @@ through Redis. Confirmed clothing is embedded through OpenRouter, persisted in
 Chroma, and available through ownership-filtered semantic search.
 The same tested wardrobe operations are exposed as four structured MCP tools
 using a trusted server-side user context.
+One authenticated Wardrobe Stylist Agent now guards chat scope, plans outfit
+categories, calls those MCP tools, and separates validated owned IDs from generic
+missing-category advice.
 
 ## Repository layout
 
@@ -42,7 +45,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 7 defaults. Before running the
+The environment file contains local Phase 9 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -279,6 +282,23 @@ Semantic search requires `OPENROUTER_API_KEY` and
 `OPENROUTER_EMBEDDING_MODEL`. The other three MCP tools remain usable without
 an embedding provider.
 
+## Wardrobe stylist API
+
+Set `OPENROUTER_CHAT_GUARDRAIL_MODEL` and `OPENROUTER_STYLIST_MODEL` in `.env`.
+The first model needs strict JSON output; the stylist also needs Chat Completions
+tool calling through OpenRouter.
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat/recommendations \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"What can I wear to a smart-casual office?"}'
+```
+
+The endpoint rejects explicit prompt injection before an AI call, redirects
+unrelated requests, caps turns and tool calls, and exposes owned items only when
+the MCP server accepted the same IDs. Missing categories are clearly non-owned.
+
 The applications can also be started with their native package managers:
 
 ```bash
@@ -308,10 +328,16 @@ Run only the Phase 8 service and MCP tool tests:
 uv run --project apps/backend pytest apps/backend/tests/test_mcp.py
 ```
 
+Run only the Phase 9 chat tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_chat.py
+```
+
 The project-wide `:check` target runs the frontend production build and backend
 test suite. Tests use mocked vision and deterministic embedding providers, so
 they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Phase 8 does not introduce the stylist agent, evaluator, or
+connection. Phase 9 does not introduce the evaluator, retry workflow, or
 recommendation-history table. Full
 frontend API and authentication integration remains Phase 12; the approved
 prototype's existing processing view is unchanged in this phase.

@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 8:
+This FastAPI service contains Cobaju's backend through Phase 9:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -39,10 +39,40 @@ This FastAPI service contains Cobaju's backend through Phase 8:
   authorization, validation, wardrobe limits, storage, mocked AI calls, queue
   failures, status polling, task retries, semantic ranking, vector lifecycle,
   retrieval authorization, category filters, MCP schemas, tool delegation, and
-  cross-user recommendation rejection.
+  cross-user recommendation rejection;
+- one authenticated OpenAI Agents SDK Wardrobe Stylist Agent;
+- deterministic prompt-injection rejection and a temperature-0.0 chat classifier;
+- required-category planning and bounded MCP wardrobe tool use;
+- owned item IDs grounded through `save_recommendation`;
+- clearly separated incomplete-wardrobe guidance;
+- one structured chat response and optional Langfuse recommendation traces;
+- mocked chat, grounding, limit, incomplete-wardrobe, and API tests.
 
-Stylist agents, evaluation, and persistent recommendation history remain out of
-scope.
+The Phase 10 evaluator/retry workflow and persistent recommendation history
+remain out of scope.
+
+## Stylist chat endpoint
+
+Phase 9 adds authenticated `POST /chat/recommendations`. Configure
+`OPENROUTER_CHAT_GUARDRAIL_MODEL` for strict JSON output and
+`OPENROUTER_STYLIST_MODEL` for strict JSON plus Chat Completions tool calling.
+The classifier runs at temperature `0.0`; the stylist runs at `0.5`.
+
+Explicit prompt injection is rejected before a paid call. Allowed requests run
+one stylist against the trusted current user's MCP process. Owned selections are
+returned only when `save_recommendation` validated the same IDs. Unavailable
+categories are returned separately as generic, non-owned guidance.
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat/recommendations \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Build a smart-casual office outfit from my wardrobe"}'
+```
+
+`STYLIST_MAX_TURNS` and `STYLIST_MAX_TOOL_CALLS` bound the run. The SDK's
+default OpenAI trace exporter is disabled. When `LANGFUSE_ENABLED=true`, Cobaju
+creates an `outfit_recommendation` trace without the message body or secrets.
 
 ## Wardrobe MCP server
 
@@ -183,6 +213,12 @@ Run only the Phase 8 service and MCP tool tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_mcp.py
+```
+
+Run only the Phase 9 chat and stylist tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_chat.py
 ```
 
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login

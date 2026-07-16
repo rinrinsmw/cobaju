@@ -28,9 +28,15 @@ class Settings(BaseSettings):
     openrouter_guardrail_model: str = ""
     openrouter_vision_model: str = ""
     openrouter_embedding_model: str = ""
+    openrouter_chat_guardrail_model: str = ""
+    openrouter_stylist_model: str = ""
     openrouter_timeout_seconds: float = 60.0
     guardrail_temperature: float = 0.0
     vision_temperature: float = 0.1
+    chat_guardrail_temperature: float = 0.0
+    stylist_temperature: float = 0.5
+    stylist_max_turns: int = Field(default=8, ge=1, le=20)
+    stylist_max_tool_calls: int = Field(default=8, ge=1, le=30)
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr = SecretStr("")

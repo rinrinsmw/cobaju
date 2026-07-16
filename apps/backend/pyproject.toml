@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28,<1.0",
     "langfuse>=3.0,<5.0",
     "mcp>=1.27,<2.0",
+    "openai-agents>=0.18,<0.19",
     "pwdlib[argon2]>=0.2,<1.0",
     "pydantic-settings>=2.8,<3.0",
     "python-multipart>=0.0.20,<1.0",

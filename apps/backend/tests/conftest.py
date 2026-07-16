@@ -16,6 +16,7 @@ def disable_unmocked_embedding_calls(
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_EMBEDDING_MODEL", "")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "false")
     get_settings.cache_clear()
     get_wardrobe_vector_store.cache_clear()
     yield

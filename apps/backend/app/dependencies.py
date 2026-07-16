@@ -13,10 +13,26 @@ from app.core.security import decode_access_token
 from app.database import get_session
 from app.models.user import User
 from app.services.mcp_client import open_user_scoped_mcp_session
+from app.services.chat_guardrails import OpenRouterChatScopeClassifier
+from app.services.stylist_agent import OpenAIAgentsStylistRunner
 from app.services.vector_store import WardrobeVectorStore, create_wardrobe_vector_store
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+@lru_cache
+def get_chat_scope_classifier() -> OpenRouterChatScopeClassifier:
+    """Return the configured classifier; tests may override this dependency."""
+
+    return OpenRouterChatScopeClassifier(get_settings())
+
+
+@lru_cache
+def get_stylist_runner() -> OpenAIAgentsStylistRunner:
+    """Return the configured Agents SDK runner; tests may override it."""
+
+    return OpenAIAgentsStylistRunner(get_settings())
 
 
 @lru_cache

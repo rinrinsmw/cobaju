@@ -61,3 +61,26 @@ def test_wardrobe_search_limit_must_be_between_one_and_fifteen() -> None:
 
     with pytest.raises(ValidationError):
         Settings(wardrobe_search_limit=16)
+
+
+def test_phase_9_temperatures_and_limits_have_safe_defaults() -> None:
+    settings = Settings()
+
+    assert settings.chat_guardrail_temperature == 0.0
+    assert settings.stylist_temperature == 0.5
+    assert settings.stylist_max_turns == 8
+    assert settings.stylist_max_tool_calls == 8
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("stylist_max_turns", 0),
+        ("stylist_max_turns", 21),
+        ("stylist_max_tool_calls", 0),
+        ("stylist_max_tool_calls", 31),
+    ],
+)
+def test_phase_9_limits_are_bounded(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
