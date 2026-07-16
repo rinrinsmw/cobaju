@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr = SecretStr("")
     langfuse_base_url: str = "https://cloud.langfuse.com"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    celery_task_max_retries: int = Field(default=2, ge=0)
+    celery_task_retry_delay_seconds: int = Field(default=5, ge=0)
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",

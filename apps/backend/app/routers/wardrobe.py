@@ -12,15 +12,16 @@ from fastapi import (
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 from app.database import get_session
 from app.dependencies import get_current_user
-from app.models.clothing_item import ClothingItem
+from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.models.user import User
 from app.schemas.wardrobe import (
     ClothingItemCreate,
     ClothingItemRead,
     ClothingItemUpdate,
+    ClothingProcessingStatusRead,
 )
 from app.services.image_uploads import (
     ImageTooLargeError,
@@ -28,12 +29,10 @@ from app.services.image_uploads import (
     delete_stored_image,
     save_original_image,
 )
-from app.services.clothing_analysis import (
-    ClothingAnalysisError,
-    ClothingVisionProvider,
-    analyze_clothing_item,
+from app.tasks.clothing_processing import (
+    ClothingTaskEnqueueError,
+    enqueue_clothing_analysis,
 )
-from app.services.openrouter import OpenRouterVisionProvider
 from app.services.wardrobe import (
     ClothingItemNotFoundError,
     InvalidProcessingStateError,
@@ -44,19 +43,13 @@ from app.services.wardrobe import (
     delete_clothing_item,
     get_owned_clothing_item,
     list_clothing_items,
+    mark_item_processing,
+    restore_item_pending,
     update_clothing_item,
 )
 
 
 router = APIRouter(prefix="/wardrobe/items", tags=["wardrobe"])
-
-
-def get_clothing_vision_provider(
-    settings: Settings = Depends(get_settings),
-) -> ClothingVisionProvider:
-    """Build the real provider at the API edge so tests can override it."""
-
-    return OpenRouterVisionProvider(settings)
 
 
 def require_user_id(current_user: User) -> int:
@@ -195,14 +188,17 @@ async def upload_item_image(
         await image.close()
 
 
-@router.post("/{item_id}/analyze", response_model=ClothingItemRead)
+@router.post(
+    "/{item_id}/analyze",
+    response_model=ClothingItemRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def analyze_item_image(
     item_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
-    provider: ClothingVisionProvider = Depends(get_clothing_vision_provider),
 ) -> ClothingItem:
-    """Synchronously guard and analyze one owned uploaded image."""
+    """Claim one owned upload and send its analysis to the Celery worker."""
 
     try:
         item = get_owned_clothing_item(
@@ -232,34 +228,60 @@ def analyze_item_image(
         )
 
     try:
-        analyzed_item, rejected_path = analyze_clothing_item(
-            session,
-            item,
-            image_path,
-            provider,
-            settings,
-        )
+        queued_item = mark_item_processing(session, item)
     except InvalidProcessingStateError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Clothing item is not ready for analysis",
         ) from error
-    except ClothingAnalysisError as error:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Clothing analysis could not be completed",
-        ) from error
 
-    if rejected_path is not None:
-        try:
-            delete_stored_image(settings.resolved_upload_directory, rejected_path)
-        except OSError:
-            pass
+    try:
+        enqueue_clothing_analysis(item_id)
+    except ClothingTaskEnqueueError as error:
+        restore_item_pending(session, queued_item)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Image must contain one clearly visible clothing item",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Clothing analysis could not be queued",
+        ) from error
+    return queued_item
+
+
+@router.get(
+    "/{item_id}/status",
+    response_model=ClothingProcessingStatusRead,
+)
+def read_item_processing_status(
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ClothingProcessingStatusRead:
+    """Return a compact, ownership-safe status for frontend polling."""
+
+    try:
+        item = get_owned_clothing_item(
+            session,
+            require_user_id(current_user),
+            item_id,
         )
-    return analyzed_item
+    except ClothingItemNotFoundError as error:
+        raise not_found_response() from error
+
+    if item.processing_status == ProcessingStatus.FAILED:
+        analysis_status = ProcessingStatus.FAILED
+    elif item.analysis_completed:
+        analysis_status = ProcessingStatus.COMPLETED
+    else:
+        analysis_status = item.processing_status
+
+    return ClothingProcessingStatusRead(
+        item_id=item_id,
+        status=analysis_status,
+        analysis_completed=item.analysis_completed,
+        needs_confirmation=(
+            item.analysis_completed
+            and item.processing_status == ProcessingStatus.PENDING
+        ),
+    )
 
 
 @router.post("/{item_id}/confirm", response_model=ClothingItemRead)

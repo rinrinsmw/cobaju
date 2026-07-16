@@ -1,10 +1,11 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 5: environment
+the approved React frontend and a FastAPI backend through Phase 6: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
-AI clothing guardrails and vision metadata analysis.
+AI clothing guardrails and vision metadata analysis executed by a Celery worker
+through Redis.
 
 ## Repository layout
 
@@ -26,6 +27,7 @@ AI clothing guardrails and vision metadata analysis.
 - [Corepack](https://nodejs.org/api/corepack.html) (included with Node.js)
 - [uv](https://docs.astral.sh/uv/) 0.11 or newer
 - Python 3.12 or newer
+- Redis 7 or newer
 
 ## First-time setup
 
@@ -37,7 +39,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 5 defaults. Before running the
+The environment file contains local Phase 6 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -53,7 +55,22 @@ moon run backend:migrate
 
 ## Run the applications
 
-Run each application in a separate terminal from the repository root.
+Run each long-lived process in a separate terminal from the repository root.
+
+Redis (native command):
+
+```bash
+redis-server
+```
+
+Confirm that the broker is reachable:
+
+```bash
+redis-cli ping
+```
+
+The expected response is `PONG`. To use another Redis instance, change
+`REDIS_URL` in `.env`.
 
 Frontend:
 
@@ -67,6 +84,12 @@ Backend:
 
 ```bash
 moon run backend:dev
+```
+
+Celery worker:
+
+```bash
+moon run backend:worker
 ```
 
 Check the API at <http://127.0.0.1:8000/health>. A successful response is:
@@ -144,7 +167,7 @@ file content, generates a unique filename, stores it below
 and changes the item status to `pending`. An item accepts only one original
 image.
 
-Analyze the uploaded image synchronously:
+Queue the uploaded image for background analysis:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/analyze \
@@ -157,6 +180,26 @@ and strict structured outputs. The guardrail uses temperature `0.0`; accepted
 images receive validated draft `name`, `category`, `color`, and `description`
 metadata from the vision model at temperature `0.1`.
 
+The queueing endpoint returns HTTP `202` with the item in `processing` state.
+Poll the authenticated status endpoint until it reports `completed` or
+`failed`:
+
+```bash
+curl http://127.0.0.1:8000/wardrobe/items/ITEM_ID/status \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+For a successful analysis awaiting review, the response is shaped like:
+
+```json
+{
+  "item_id": 1,
+  "status": "completed",
+  "analysis_completed": true,
+  "needs_confirmation": true
+}
+```
+
 The analyzed item remains `pending` with `analysis_completed: true`. Review it
 and optionally edit it with `PATCH /wardrobe/items/ITEM_ID`, then confirm it:
 
@@ -167,14 +210,17 @@ curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/confirm \
 
 Confirmation changes the status to `completed`. Rejected non-clothing images
 are detached and deleted. Transient AI failures keep the valid image for a
-retry and set the item to `failed`. Set `LANGFUSE_ENABLED=true` and provide
-Langfuse credentials to trace the workflow; telemetry is off by default.
+maximum of two retries and then set the item to `failed`. A Redis dispatch
+failure restores the item to `pending`, so the request can safely be retried.
+Set `LANGFUSE_ENABLED=true` and provide Langfuse credentials to trace the
+workflow; telemetry is off by default.
 
 The applications can also be started with their native package managers:
 
 ```bash
 corepack pnpm@10.12.1 --dir apps/frontend dev
 uv run --project apps/backend uvicorn --app-dir apps/backend app.main:app --reload
+uv run --project apps/backend celery --workdir apps/backend -A app.celery_app:celery_app worker --loglevel=INFO
 ```
 
 The native Alembic equivalent of the Moon migration command is:
@@ -193,6 +239,8 @@ moon run :check
 ```
 
 The project-wide `:check` target runs the frontend production build and backend
-test suite. Tests mock the vision provider and require no OpenRouter credits or
-Langfuse connection. Phase 5 does not introduce Redis, Celery, Chroma, agents,
-or MCP.
+test suite. Tests run Celery task logic eagerly with a mocked vision provider,
+so they require no running Redis server, OpenRouter credits, or Langfuse
+connection. Phase 6 does not introduce Chroma, RAG, agents, or MCP. Full
+frontend API and authentication integration remains Phase 12; the approved
+prototype's existing processing view is unchanged in this phase.

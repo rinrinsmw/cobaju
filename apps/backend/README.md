@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 5:
+This FastAPI service contains Cobaju's backend through Phase 6:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -22,10 +22,14 @@ This FastAPI service contains Cobaju's backend through Phase 5:
 - a synchronous, mockable clothing guardrail and metadata analysis service;
 - strict metadata validation and an explicit review/confirmation workflow;
 - optional nested Langfuse clothing-analysis observations;
+- Redis-backed Celery dispatch with limited retry behavior;
+- an ownership-safe clothing-processing status endpoint;
+- a Moonrepo worker task;
 - pytest coverage for settings, sessions, health, authentication, CRUD,
-  authorization, validation, wardrobe limits, storage, and mocked AI calls.
+  authorization, validation, wardrobe limits, storage, mocked AI calls, queue
+  failures, status polling, and task retries.
 
-Celery, Redis, Chroma, stylist agents, and MCP remain out of scope.
+Chroma, RAG, stylist agents, and MCP remain out of scope.
 
 ## Wardrobe endpoints
 
@@ -40,6 +44,7 @@ PATCH  /wardrobe/items/{item_id}
 DELETE /wardrobe/items/{item_id}
 POST   /wardrobe/items/{item_id}/image
 POST   /wardrobe/items/{item_id}/analyze
+GET    /wardrobe/items/{item_id}/status
 POST   /wardrobe/items/{item_id}/confirm
 ```
 
@@ -54,12 +59,21 @@ the configured `UPLOAD_DIRECTORY`, and changes the item status to `pending`.
 Client filenames are never used for storage. A second upload to the same item
 is rejected with HTTP 409.
 
-Analysis first runs a temperature-0.0 clothing guardrail. Rejected images are
-detached and deleted. Accepted images go to the configured vision model at
-temperature 0.1 and produce only `name`, `category`, `color`, and optional
-`description`. Pydantic validates these fields before saving. The owner can
-edit the pending draft through `PATCH`, then call `confirm` to mark it
-`completed`. `analysis_completed` prevents confirmation before AI analysis.
+The analysis endpoint claims an item as `processing`, sends its database ID to
+Redis, and returns HTTP 202. The Celery worker first runs a temperature-0.0
+clothing guardrail. Rejected images are detached and deleted. Accepted images
+go to the configured vision model at temperature 0.1 and produce only `name`,
+`category`, `color`, and optional `description`. Pydantic validates these
+fields before saving. Poll `GET /wardrobe/items/{item_id}/status`; successful
+analysis reports `completed` with `needs_confirmation: true`. The owner can
+edit the underlying pending draft through `PATCH`, then call `confirm` to mark
+the wardrobe item `completed`. The processing state blocks duplicate work while
+the task runs, and `analysis_completed` blocks re-analysis after metadata is
+ready.
+
+Provider failures retry according to `CELERY_TASK_MAX_RETRIES` and
+`CELERY_TASK_RETRY_DELAY_SECONDS`, then remain `failed`. If Redis cannot accept
+the task, the API returns HTTP 503 and restores the item to retryable `pending`.
 
 For real calls, set `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`, and
 `OPENROUTER_VISION_MODEL` in the root `.env`. Both models must support image
@@ -82,13 +96,20 @@ Start the API:
 moon run backend:dev
 ```
 
+Start Redis, then start the worker in another terminal:
+
+```bash
+redis-server
+moon run backend:worker
+```
+
 Run the backend tests:
 
 ```bash
 moon run backend:test
 ```
 
-Run only the mocked Phase 5 tests:
+Run only the mocked clothing-analysis and Phase 6 processing tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_clothing_analysis.py
@@ -104,4 +125,5 @@ Native uv commands are also available:
 uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 uv run --project apps/backend pytest apps/backend/tests
 uv run --project apps/backend uvicorn --app-dir apps/backend app.main:app --reload
+uv run --project apps/backend celery --workdir apps/backend -A app.celery_app:celery_app worker --loglevel=INFO
 ```

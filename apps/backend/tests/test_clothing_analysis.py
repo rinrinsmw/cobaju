@@ -12,10 +12,15 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.core.config import Settings, get_settings
 from app.database import get_session
 from app.main import app
-from app.routers.wardrobe import get_clothing_vision_provider
+from app.routers import wardrobe as wardrobe_router
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
-from app.services.clothing_analysis import ClothingAnalysisTracer
+from app.services.clothing_analysis import ClothingAnalysisError, ClothingAnalysisTracer
 from app.services.openrouter import OpenRouterResponseError, OpenRouterVisionProvider
+from app.tasks.clothing_processing import (
+    ClothingTaskEnqueueError,
+    process_clothing_item,
+    run_clothing_processing,
+)
 
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0mock-clothing\xff\xd9"
@@ -72,8 +77,28 @@ def client(
         with Session(engine) as session:
             yield session
 
+    def run_task_immediately(item_id: int) -> None:
+        """Exercise worker logic without Redis or a paid provider."""
+
+        try:
+            with Session(engine) as session:
+                run_clothing_processing(
+                    session,
+                    item_id,
+                    fake_provider,
+                    get_settings(),
+                )
+        except ClothingAnalysisError:
+            # The real Celery wrapper retries this failure. These Phase 5
+            # contract tests only need to observe the persisted failed state.
+            pass
+
+    monkeypatch.setattr(
+        wardrobe_router,
+        "enqueue_clothing_analysis",
+        run_task_immediately,
+    )
     app.dependency_overrides[get_session] = get_test_session
-    app.dependency_overrides[get_clothing_vision_provider] = lambda: fake_provider
     with TestClient(app) as test_client:
         yield test_client, upload_directory, fake_provider
 
@@ -115,17 +140,27 @@ def test_clothing_image_generates_editable_draft_then_user_confirms(
     headers = auth_headers(test_client, "owner@example.com")
     item_id, _ = create_and_upload(test_client, headers)
 
-    analyzed = test_client.post(
+    queued = test_client.post(
         f"/wardrobe/items/{item_id}/analyze", headers=headers
     )
+    analyzed = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
+    processing_status = test_client.get(
+        f"/wardrobe/items/{item_id}/status", headers=headers
+    )
 
-    assert analyzed.status_code == 200
+    assert queued.status_code == 202
     assert analyzed.json()["processing_status"] == "pending"
     assert analyzed.json()["name"] == "Blue crew-neck T-shirt"
     assert analyzed.json()["category"] == "top"
     assert analyzed.json()["analysis_completed"] is True
     assert fake_provider.classify_calls == 1
     assert fake_provider.analyze_calls == 1
+    assert processing_status.json() == {
+        "item_id": item_id,
+        "status": "completed",
+        "analysis_completed": True,
+        "needs_confirmation": True,
+    }
 
     edited = test_client.patch(
         f"/wardrobe/items/{item_id}",
@@ -152,18 +187,19 @@ def test_clear_non_clothing_image_is_rejected_and_deleted(
     item_id, relative_path = create_and_upload(test_client, headers)
     stored_file = upload_directory / relative_path
 
-    response = test_client.post(
+    queued = test_client.post(
         f"/wardrobe/items/{item_id}/analyze", headers=headers
     )
     detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
+    processing_status = test_client.get(
+        f"/wardrobe/items/{item_id}/status", headers=headers
+    )
 
-    assert response.status_code == 422
-    assert response.json() == {
-        "detail": "Image must contain one clearly visible clothing item"
-    }
+    assert queued.status_code == 202
     assert fake_provider.analyze_calls == 0
     assert detail.json()["original_image_path"] is None
     assert detail.json()["processing_status"] == "failed"
+    assert processing_status.json()["status"] == "failed"
     assert not stored_file.exists()
 
 
@@ -187,6 +223,88 @@ def test_analysis_and_confirmation_enforce_ownership_and_state(
     assert fake_provider.classify_calls == 0
 
 
+def test_analyze_queues_once_and_status_polling_enforces_ownership(
+    client: tuple[TestClient, Path, FakeVisionProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_client, _, _ = client
+    owner = auth_headers(test_client, "queue-owner@example.com")
+    other = auth_headers(test_client, "queue-other@example.com")
+    item_id, _ = create_and_upload(test_client, owner)
+    queued_ids: list[int] = []
+    monkeypatch.setattr(wardrobe_router, "enqueue_clothing_analysis", queued_ids.append)
+
+    queued = test_client.post(f"/wardrobe/items/{item_id}/analyze", headers=owner)
+    duplicate = test_client.post(
+        f"/wardrobe/items/{item_id}/analyze", headers=owner
+    )
+    status_response = test_client.get(
+        f"/wardrobe/items/{item_id}/status", headers=owner
+    )
+    cross_user_status = test_client.get(
+        f"/wardrobe/items/{item_id}/status", headers=other
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["processing_status"] == "processing"
+    assert queued_ids == [item_id]
+    assert duplicate.status_code == 409
+    assert status_response.json() == {
+        "item_id": item_id,
+        "status": "processing",
+        "analysis_completed": False,
+        "needs_confirmation": False,
+    }
+    assert cross_user_status.status_code == 404
+
+
+def test_broker_failure_restores_pending_item_for_retry(
+    client: tuple[TestClient, Path, FakeVisionProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_client, _, _ = client
+    headers = auth_headers(test_client, "broker-failure@example.com")
+    item_id, _ = create_and_upload(test_client, headers)
+
+    def fail_enqueue(item_id: int) -> None:
+        raise ClothingTaskEnqueueError
+
+    monkeypatch.setattr(wardrobe_router, "enqueue_clothing_analysis", fail_enqueue)
+    response = test_client.post(
+        f"/wardrobe/items/{item_id}/analyze", headers=headers
+    )
+    detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Clothing analysis could not be queued"}
+    assert detail.json()["processing_status"] == "pending"
+
+
+def test_celery_task_retries_twice_then_keeps_failed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fail_processing(*args: Any, **kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        raise ClothingAnalysisError("temporary provider failure")
+
+    monkeypatch.setattr(
+        "app.tasks.clothing_processing.run_clothing_processing",
+        fail_processing,
+    )
+    monkeypatch.setenv("CELERY_TASK_MAX_RETRIES", "2")
+    monkeypatch.setenv("CELERY_TASK_RETRY_DELAY_SECONDS", "0")
+    get_settings.cache_clear()
+
+    result = process_clothing_item.apply(args=[999])
+
+    assert result.get() == "failed"
+    assert calls == 3
+    get_settings.cache_clear()
+
+
 def test_invalid_generated_metadata_marks_item_failed_and_keeps_image(
     client: tuple[TestClient, Path, FakeVisionProvider],
     monkeypatch: pytest.MonkeyPatch,
@@ -199,15 +317,12 @@ def test_invalid_generated_metadata_marks_item_failed_and_keeps_image(
         return {"name": "Hat", "category": "hat", "color": "red"}
 
     monkeypatch.setattr(fake_provider, "analyze_image", invalid_metadata)
-    response = test_client.post(
+    queued = test_client.post(
         f"/wardrobe/items/{item_id}/analyze", headers=headers
     )
     detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "Clothing analysis could not be completed"
-    }
+    assert queued.status_code == 202
     assert detail.json()["processing_status"] == "failed"
     assert detail.json()["analysis_completed"] is False
     assert detail.json()["original_image_path"] == relative_path

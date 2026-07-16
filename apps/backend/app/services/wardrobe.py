@@ -124,12 +124,14 @@ def attach_image_to_clothing_item(
 
 
 def mark_item_processing(session: Session, item: ClothingItem) -> ClothingItem:
-    """Move an uploaded item into synchronous vision processing."""
+    """Claim an uploaded item for vision processing."""
 
-    if item.original_image_path is None or item.processing_status not in {
-        ProcessingStatus.PENDING,
-        ProcessingStatus.FAILED,
-    }:
+    if (
+        item.original_image_path is None
+        or item.analysis_completed
+        or item.processing_status
+        not in {ProcessingStatus.PENDING, ProcessingStatus.FAILED}
+    ):
         raise InvalidProcessingStateError
     item.analysis_completed = False
     item.processing_status = ProcessingStatus.PROCESSING
@@ -160,6 +162,18 @@ def mark_item_failed(session: Session, item: ClothingItem) -> ClothingItem:
     """Record an analysis failure while retaining the image for a retry."""
 
     item.processing_status = ProcessingStatus.FAILED
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def restore_item_pending(session: Session, item: ClothingItem) -> ClothingItem:
+    """Make an item retryable when its task could not reach the broker."""
+
+    if item.processing_status != ProcessingStatus.PROCESSING:
+        raise InvalidProcessingStateError
+    item.processing_status = ProcessingStatus.PENDING
     session.add(item)
     session.commit()
     session.refresh(item)

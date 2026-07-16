@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from sqlmodel import Session
 
 from app.core.config import Settings
-from app.models.clothing_item import ClothingItem
+from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.wardrobe import (
     mark_item_failed,
@@ -74,7 +74,11 @@ def analyze_clothing_item(
     """
 
     tracer = ClothingAnalysisTracer(settings)
-    mark_item_processing(session, item)
+    # The API normally claims the item before it sends the Celery message.
+    # Keeping this fallback makes the Phase 5 service independently usable in
+    # unit tests and other trusted Python callers.
+    if item.processing_status != ProcessingStatus.PROCESSING:
+        mark_item_processing(session, item)
 
     try:
         with tracer.observation(

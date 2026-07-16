@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import BACKEND_DIR, Settings
 
 
@@ -29,3 +32,11 @@ def test_absolute_upload_directory_is_not_changed(tmp_path: Path) -> None:
     settings = Settings(upload_directory=str(upload_directory))
 
     assert settings.resolved_upload_directory == upload_directory
+
+
+def test_celery_retry_settings_cannot_be_negative() -> None:
+    with pytest.raises(ValidationError):
+        Settings(celery_task_max_retries=-1)
+
+    with pytest.raises(ValidationError):
+        Settings(celery_task_retry_delay_seconds=-1)

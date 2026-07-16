@@ -32,6 +32,12 @@ tasks:
     outputs:
       - "cobaju.db"
 
+  worker:
+    command: "uv run celery -A app.celery_app:celery_app worker --loglevel=INFO"
+    env:
+      UV_CACHE_DIR: "../../.uv-cache"
+    preset: "server"
+
   check:
     deps:
       - "test"

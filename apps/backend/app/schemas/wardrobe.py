@@ -98,6 +98,15 @@ class ClothingItemRead(ClothingItemFields):
     processing_status: ProcessingStatus
 
 
+class ClothingProcessingStatusRead(BaseModel):
+    """Small polling response for one authenticated user's analysis job."""
+
+    item_id: int
+    status: ProcessingStatus
+    analysis_completed: bool
+    needs_confirmation: bool
+
+
 class ClothingGuardrailResult(BaseModel):
     """Strict result returned by the inexpensive clothing guardrail."""
 
