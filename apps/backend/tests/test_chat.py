@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.config import Settings
+from app.database import get_session
 from app.dependencies import (
     get_chat_scope_classifier,
     get_current_user,
@@ -76,6 +77,7 @@ class FakeEvaluator:
             complete=True,
             colors_compatible=True,
             styles_compatible=True,
+            evaluation_score=9.4,
             feedback="Candidate passes all checks.",
         )
 
@@ -310,6 +312,18 @@ def chat_client() -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_chat_scope_classifier] = lambda: classifier
     app.dependency_overrides[get_stylist_runner] = lambda: runner
     app.dependency_overrides[get_outfit_evaluator] = lambda: FakeEvaluator()
+    test_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(test_engine)
+
+    def session_override() -> Generator[Session, None, None]:
+        with Session(test_engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()

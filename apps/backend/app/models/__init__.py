@@ -5,7 +5,14 @@ from app.models.clothing_item import (
     ClothingItem,
     ProcessingStatus,
 )
+from app.models.recommendation import Recommendation
 from app.models.user import User
 
 
-__all__ = ["ClothingCategory", "ClothingItem", "ProcessingStatus", "User"]
+__all__ = [
+    "ClothingCategory",
+    "ClothingItem",
+    "ProcessingStatus",
+    "Recommendation",
+    "User",
+]

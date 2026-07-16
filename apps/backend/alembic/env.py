@@ -7,7 +7,11 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from app.core.config import get_settings
-from app.models import ClothingItem, User  # noqa: F401 - registers model metadata
+from app.models import (  # noqa: F401 - registers model metadata
+    ClothingItem,
+    Recommendation,
+    User,
+)
 
 
 config = context.config

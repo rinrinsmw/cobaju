@@ -1,7 +1,7 @@
 # Cobaju
 
 Cobaju is an AI-powered wardrobe assistant. This repository currently contains
-the approved React frontend and a FastAPI backend through Phase 10: environment
+the approved React frontend and a FastAPI backend through Phase 11: environment
 settings, SQLModel, SQLite, Alembic migrations, JWT authentication, and
 ownership-safe wardrobe CRUD, validated local image uploads, and synchronous
 AI clothing guardrails and vision metadata analysis executed by a Celery worker
@@ -15,6 +15,8 @@ missing-category advice.
 Every candidate now passes through a separate temperature-zero evaluator and a
 database-backed deterministic validator. A rejected candidate receives at most
 one stylist retry; a second failure is never returned to the user.
+Accepted recommendations are saved with their evaluator score and exposed
+through an ownership-scoped history API used by the approved Lookbook screen.
 
 ## Repository layout
 
@@ -48,7 +50,7 @@ corepack pnpm@10.12.1 --dir apps/frontend install --frozen-lockfile
 uv sync --project apps/backend
 ```
 
-The environment file contains local Phase 10 defaults. Before running the
+The environment file contains local Phase 11 defaults. Before running the
 backend, replace `JWT_SECRET_KEY` in `.env` with a private random value. One
 way to generate it is:
 
@@ -277,9 +279,8 @@ or does not identify an existing SQLite user. One stdio process and client
 session belong to exactly one authenticated user.
 
 `save_recommendation` validates that every selected ID is unique, confirmed,
-and owned by the trusted user. Its Phase 8 response has `persisted: false`:
-database-backed recommendation history belongs to Phase 11 and is intentionally
-not introduced early.
+and owned by the trusted user. It remains a pre-evaluation check and returns
+`persisted: false`; the chat service saves only the final accepted candidate.
 
 Semantic search requires `OPENROUTER_API_KEY` and
 `OPENROUTER_EMBEDDING_MODEL`. The other three MCP tools remain usable without
@@ -306,6 +307,23 @@ Before a response is returned, the evaluator checks occasion, completeness,
 color, style, and unsupported claims at temperature `0.0`. The deterministic
 validator then rechecks confirmed ownership directly from SQLite, category
 claims, and the `Not owned:` label. Rejected candidates are retried once only.
+
+## Recommendation history
+
+Every accepted chat recommendation is saved with the original request, selected
+item IDs, final explanation, evaluator score, and completion timestamp. List
+the authenticated user's newest records first:
+
+```bash
+curl http://127.0.0.1:8000/recommendations \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+History never returns another user's records. If a selected item is later
+deleted, the record remains readable and returns that item with
+`available: false`. The Lookbook uses the Vite `/api` development proxy. Until
+Phase 12 adds the full authentication UI, it reads the Bearer token from the
+browser local storage key `access_token`.
 
 The applications can also be started with their native package managers:
 
@@ -348,9 +366,14 @@ Run only the Phase 10 evaluation and retry tests:
 uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py
 ```
 
+Run only the Phase 11 history tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_recommendation_history.py
+```
+
 The project-wide `:check` target runs the frontend production build and backend
 test suite. Tests use mocked vision and deterministic embedding providers, so
 they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Phase 10 does not introduce the recommendation-history table. Full
-frontend API and authentication integration remains Phase 12; the approved
-prototype's existing processing view is unchanged in this phase.
+connection. Full frontend API and authentication integration remains Phase 12;
+Phase 11 connects only the approved Lookbook history screen.

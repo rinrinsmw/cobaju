@@ -70,6 +70,7 @@ def evaluation(*, accepted: bool, feedback: str = "Looks good.") -> OutfitEvalua
         complete=accepted,
         colors_compatible=accepted,
         styles_compatible=accepted,
+        evaluation_score=10 if accepted else 4,
         feedback=feedback,
     )
 

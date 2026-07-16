@@ -90,6 +90,7 @@ class OutfitEvaluation(BaseModel):
     complete: bool
     colors_compatible: bool
     styles_compatible: bool
+    evaluation_score: float = Field(ge=0, le=10)
     unsupported_claims: list[str] = Field(default_factory=list, max_length=10)
     feedback: str = Field(min_length=1, max_length=600)
 

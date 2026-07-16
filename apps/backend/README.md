@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 10:
+This FastAPI service contains Cobaju's backend through Phase 11:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -53,12 +53,29 @@ This FastAPI service contains Cobaju's backend through Phase 10:
 - hallucination outcomes in optional Langfuse validation observations;
 - exactly one retry after evaluator or deterministic rejection;
 - mocked evaluation, cross-user, invalid-ID, unsupported-claim, and retry tests.
+- a recommendation table populated only after final evaluation succeeds;
+- an authenticated, newest-first `GET /recommendations` history endpoint;
+- safe unavailable-item output when historically selected clothing is deleted;
+- persistence, ownership-isolation, deleted-item, and history API tests.
 
-Persistent recommendation history remains out of scope until Phase 11.
+## Recommendation history
+
+The chat service writes history only after both evaluation layers accept the
+final candidate. The MCP `save_recommendation` tool remains a pre-evaluation
+ownership validator and therefore still returns `persisted: false`.
+
+```bash
+curl http://127.0.0.1:8000/recommendations \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+Records contain the original request, selected IDs, explanation, score, and
+timestamp. Current item details are resolved at read time. Deleted items stay
+in the selected ID list and are returned with `available: false`.
 
 ## Stylist chat endpoint
 
-The authenticated `POST /chat/recommendations` workflow now includes Phase 10.
+The authenticated `POST /chat/recommendations` workflow now includes Phase 11.
 Configure
 `OPENROUTER_CHAT_GUARDRAIL_MODEL` for strict JSON output and
 `OPENROUTER_STYLIST_MODEL` for strict JSON plus Chat Completions tool calling.
@@ -112,9 +129,8 @@ server can still list categories, get confirmed items, and validate a
 recommendation when semantic retrieval is not configured.
 
 `save_recommendation` rejects missing, unconfirmed, cross-user, duplicate, or
-invalid IDs. It returns the validated owned item records and `persisted: false`.
-The recommendation-history table and durable saving are deliberately deferred
-to Phase 11.
+invalid IDs. It returns the validated owned item records and `persisted: false`;
+the final chat workflow performs durable saving after evaluation succeeds.
 
 ## Wardrobe endpoints
 
@@ -236,6 +252,12 @@ Run only the Phase 10 evaluator and deterministic validation tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py
+```
+
+Run only the Phase 11 recommendation history tests:
+
+```bash
+uv run --project apps/backend pytest apps/backend/tests/test_recommendation_history.py
 ```
 
 The API requires `JWT_SECRET_KEY` in the repository root `.env` before login

@@ -206,7 +206,7 @@ def test_normal_item_and_category_services_hide_other_users_and_drafts(
         service.get_clothing_item(foreign.id or 0)
 
 
-def test_save_recommendation_validates_every_owned_item_without_persisting_history(
+def test_save_recommendation_validates_candidate_without_persisting_early(
     wardrobe_session: Session,
 ) -> None:
     own_item = add_item(

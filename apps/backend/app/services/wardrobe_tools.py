@@ -126,7 +126,7 @@ class WardrobeToolService:
         self,
         recommendation: SaveRecommendationInput,
     ) -> SaveRecommendationOutput:
-        """Validate a candidate without adding Phase 11 history persistence."""
+        """Validate a candidate; the chat service saves it only after evaluation."""
 
         items: list[ToolClothingItem] = []
         try:

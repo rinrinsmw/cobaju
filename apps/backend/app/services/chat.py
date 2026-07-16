@@ -18,6 +18,7 @@ from app.services.outfit_evaluator import (
     get_owned_item_evidence,
     validate_recommendation,
 )
+from app.services.recommendations import save_completed_recommendation
 from app.services.stylist_agent import StylistRunOutcome, StylistRunner
 
 
@@ -151,12 +152,24 @@ async def create_stylist_response(
                 pass
 
             if not violations:
+                if current_user.id is None:
+                    raise RecommendationValidationError(
+                        "Authenticated user has no persisted ID"
+                    )
+                save_completed_recommendation(
+                    session,
+                    user_id=current_user.id,
+                    original_request=message,
+                    response=outcome.response,
+                    evaluation_score=evaluation.evaluation_score,
+                )
                 with tracer.observation(
                     "final_response",
                     output={
                         "status": outcome.response.status,
                         "retry_count": attempt,
                         "hallucination_detected": False,
+                        "evaluation_score": evaluation.evaluation_score,
                     },
                 ):
                     return outcome.response

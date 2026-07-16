@@ -43,7 +43,7 @@ class ListWardrobeCategoriesOutput(BaseModel):
 
 
 class SaveRecommendationInput(BaseModel):
-    """Recommendation candidate to validate before a later history phase."""
+    """Recommendation candidate to validate before final evaluation and saving."""
 
     user_request: str = Field(min_length=1, max_length=500)
     item_ids: list[int] = Field(min_length=1, max_length=15)
@@ -70,7 +70,7 @@ class SaveRecommendationInput(BaseModel):
 
 
 class SaveRecommendationOutput(BaseModel):
-    """An ownership-validated recommendation accepted by the tool layer."""
+    """A pre-evaluation recommendation accepted by the tool layer."""
 
     status: Literal["accepted"] = "accepted"
     user_request: str
