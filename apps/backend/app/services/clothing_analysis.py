@@ -10,7 +10,6 @@ from app.core.config import Settings
 from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.wardrobe import (
-    mark_item_failed,
     mark_item_processing,
     reject_item_image,
     save_generated_metadata,
@@ -109,7 +108,6 @@ def analyze_clothing_item(
 
             return save_generated_metadata(session, item, validated_metadata), None
     except Exception as error:
-        mark_item_failed(session, item)
         if isinstance(error, ClothingAnalysisError):
             raise
         raise ClothingAnalysisError("Clothing analysis failed") from error

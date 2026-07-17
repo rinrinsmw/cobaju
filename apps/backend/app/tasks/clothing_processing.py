@@ -43,7 +43,8 @@ def run_clothing_processing(
         return "missing"
 
     # A redelivered task must not overwrite metadata that is already ready for
-    # review. Failed items are allowed because Celery uses that state to retry.
+    # review. Failed items remain allowed so a user-triggered retry can reuse
+    # this synchronous service after the API claims the item again.
     if item.analysis_completed:
         return "completed"
     if item.processing_status not in {
@@ -94,6 +95,14 @@ def process_clothing_item(task: Task, item_id: int) -> str:
             return run_clothing_processing(session, item_id, provider, settings)
     except ClothingAnalysisError as error:
         if task.request.retries >= settings.celery_task_max_retries:
+            with Session(engine) as session:
+                item = session.get(ClothingItem, item_id)
+                if (
+                    item is not None
+                    and not item.analysis_completed
+                    and item.processing_status == ProcessingStatus.PROCESSING
+                ):
+                    mark_item_failed(session, item)
             return "failed"
         raise task.retry(
             exc=error,

@@ -12,6 +12,8 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.core.config import Settings, get_settings
 from app.database import get_session
 from app.main import app
+from app.models.clothing_item import ClothingItem, ProcessingStatus
+from app.models.user import User
 from app.routers import wardrobe as wardrobe_router
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.clothing_analysis import ClothingAnalysisError, ClothingAnalysisTracer
@@ -90,7 +92,7 @@ def client(
                 )
         except ClothingAnalysisError:
             # The real Celery wrapper retries this failure. These Phase 5
-            # contract tests only need to observe the persisted failed state.
+            # contract tests only need to observe the retryable processing state.
             pass
 
     monkeypatch.setattr(
@@ -280,9 +282,95 @@ def test_broker_failure_restores_pending_item_for_retry(
     assert detail.json()["processing_status"] == "pending"
 
 
-def test_celery_task_retries_twice_then_keeps_failed_result(
+def create_processing_test_item(
+    tmp_path: Path,
+) -> tuple[Any, int, Settings]:
+    """Create one claimed item for direct worker lifecycle tests."""
+
+    upload_directory = tmp_path / "uploads"
+    image_path = upload_directory / "1" / "item.jpg"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(JPEG_BYTES)
+    test_engine = create_engine(
+        f"sqlite:///{tmp_path / 'worker.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        user = User(email="worker@example.com", hashed_password="test-hash")
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        item = ClothingItem(
+            user_id=user.id,
+            name="Pending analysis",
+            category="accessory",
+            color="Unknown",
+            original_image_path="1/item.jpg",
+            analysis_completed=False,
+            processing_status=ProcessingStatus.PROCESSING,
+        )
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        item_id = item.id
+
+    assert item_id is not None
+    return test_engine, item_id, Settings(upload_directory=str(upload_directory))
+
+
+def test_first_temporary_failure_remains_processing(tmp_path: Path) -> None:
+    test_engine, item_id, settings = create_processing_test_item(tmp_path)
+    provider = FakeVisionProvider()
+
+    def fail_temporarily(image_path: Path) -> ClothingMetadata:
+        raise RuntimeError("temporary provider failure")
+
+    provider.analyze_image = fail_temporarily
+    with Session(test_engine) as session:
+        with pytest.raises(ClothingAnalysisError):
+            run_clothing_processing(session, item_id, provider, settings)
+
+    with Session(test_engine) as session:
+        item = session.get(ClothingItem, item_id)
+        assert item is not None
+        assert item.processing_status == ProcessingStatus.PROCESSING
+        assert item.analysis_completed is False
+
+
+def test_retry_success_completes_analysis_normally(tmp_path: Path) -> None:
+    test_engine, item_id, settings = create_processing_test_item(tmp_path)
+    provider = FakeVisionProvider()
+    analyze_calls = 0
+    successful_analysis = provider.analyze_image
+
+    def fail_once_then_succeed(image_path: Path) -> ClothingMetadata:
+        nonlocal analyze_calls
+        analyze_calls += 1
+        if analyze_calls == 1:
+            raise RuntimeError("temporary provider failure")
+        return successful_analysis(image_path)
+
+    provider.analyze_image = fail_once_then_succeed
+    with Session(test_engine) as session:
+        with pytest.raises(ClothingAnalysisError):
+            run_clothing_processing(session, item_id, provider, settings)
+    with Session(test_engine) as session:
+        assert run_clothing_processing(session, item_id, provider, settings) == "completed"
+
+    with Session(test_engine) as session:
+        item = session.get(ClothingItem, item_id)
+        assert item is not None
+        assert item.processing_status == ProcessingStatus.PENDING
+        assert item.analysis_completed is True
+        assert item.name == "Blue crew-neck T-shirt"
+
+
+def test_celery_task_exhausted_retries_mark_item_failed(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    test_engine, item_id, _ = create_processing_test_item(tmp_path)
     calls = 0
 
     def fail_processing(*args: Any, **kwargs: Any) -> str:
@@ -294,18 +382,24 @@ def test_celery_task_retries_twice_then_keeps_failed_result(
         "app.tasks.clothing_processing.run_clothing_processing",
         fail_processing,
     )
+    monkeypatch.setattr("app.tasks.clothing_processing.engine", test_engine)
     monkeypatch.setenv("CELERY_TASK_MAX_RETRIES", "2")
     monkeypatch.setenv("CELERY_TASK_RETRY_DELAY_SECONDS", "0")
     get_settings.cache_clear()
 
-    result = process_clothing_item.apply(args=[999])
+    result = process_clothing_item.apply(args=[item_id])
 
     assert result.get() == "failed"
     assert calls == 3
+    with Session(test_engine) as session:
+        item = session.get(ClothingItem, item_id)
+        assert item is not None
+        assert item.processing_status == ProcessingStatus.FAILED
+        assert item.analysis_completed is False
     get_settings.cache_clear()
 
 
-def test_invalid_generated_metadata_marks_item_failed_and_keeps_image(
+def test_invalid_generated_metadata_remains_processing_for_worker_retry(
     client: tuple[TestClient, Path, FakeVisionProvider],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -323,7 +417,7 @@ def test_invalid_generated_metadata_marks_item_failed_and_keeps_image(
     detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
 
     assert queued.status_code == 202
-    assert detail.json()["processing_status"] == "failed"
+    assert detail.json()["processing_status"] == "processing"
     assert detail.json()["analysis_completed"] is False
     assert detail.json()["original_image_path"] == relative_path
     assert (upload_directory / relative_path).exists()
