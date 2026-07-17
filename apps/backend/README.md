@@ -139,12 +139,14 @@ All routes use the authenticated user from the JWT and never accept a client
 
 ```text
 POST   /wardrobe/items
+POST   /wardrobe/items/upload
 GET    /wardrobe/items
 GET    /wardrobe/items/search?q=QUERY&category=OPTIONAL&limit=OPTIONAL
 GET    /wardrobe/items/{item_id}
 PATCH  /wardrobe/items/{item_id}
 DELETE /wardrobe/items/{item_id}
 POST   /wardrobe/items/{item_id}/image
+GET    /wardrobe/items/{item_id}/image
 POST   /wardrobe/items/{item_id}/analyze
 GET    /wardrobe/items/{item_id}/status
 POST   /wardrobe/items/{item_id}/confirm
@@ -155,11 +157,17 @@ Create and update bodies use `name`, `category`, `color`, and optional
 `bag`, and `accessory`. A manual create is immediately `completed`; processing
 status is returned by the API but cannot be set by the client.
 
-The multipart image endpoint uses the field name `image`. It accepts one JPG,
-PNG, or WebP file up to 5 MB, verifies its binary signature, stores it under
-the configured `UPLOAD_DIRECTORY`, and changes the item status to `pending`.
-Client filenames are never used for storage. A second upload to the same item
-is rejected with HTTP 409.
+For the normal upload flow, `POST /wardrobe/items/upload` combines record
+creation and image storage in one multipart request using the field name
+`image`. It creates a `pending` draft whose temporary metadata is replaced by
+vision analysis. If either storage or database creation fails, neither an
+orphan file nor an orphan record is retained.
+
+The older `POST /wardrobe/items/{item_id}/image` endpoint remains available for
+attaching an image to an existing owned item. Both endpoints accept one JPG,
+PNG, or WebP file up to 5 MB, verify its binary signature, and store it under
+the configured `UPLOAD_DIRECTORY`. Client filenames are never used for
+storage. An existing item accepts only one image.
 
 The analysis endpoint claims an item as `processing`, sends its database ID to
 Redis, and returns HTTP 202. The Celery worker first runs a temperature-0.0

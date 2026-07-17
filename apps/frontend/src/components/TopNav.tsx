@@ -5,6 +5,7 @@ interface Props {
   onNavigate: (p: Page) => void
   scrolled: boolean
   isDarkPage: boolean
+  onLogout: () => void
 }
 
 const links: { id: Page; label: string }[] = [
@@ -13,7 +14,7 @@ const links: { id: Page; label: string }[] = [
   { id: 'history', label: 'Lookbook' },
 ]
 
-export default function TopNav({ page, onNavigate, scrolled, isDarkPage }: Props) {
+export default function TopNav({ page, onNavigate, scrolled, isDarkPage, onLogout }: Props) {
   const onDarkHero = isDarkPage && !scrolled
   const textColor = onDarkHero ? 'rgba(255,255,255,0.85)' : '#1a1816'
   const hoverColor = onDarkHero ? '#fff' : '#1a1816'
@@ -61,7 +62,7 @@ export default function TopNav({ page, onNavigate, scrolled, isDarkPage }: Props
         </button>
 
         {/* Center links */}
-        <nav style={{ display: 'flex', gap: 36, alignItems: 'center' }}>
+        <nav className="desktop-nav" style={{ display: 'flex', gap: 36, alignItems: 'center' }}>
           {links.map(l => (
             <button
               key={l.id}
@@ -90,7 +91,7 @@ export default function TopNav({ page, onNavigate, scrolled, isDarkPage }: Props
         </nav>
 
         {/* Right CTA */}
-        <button
+        <div style={{ display: 'flex', gap: 8 }}><button
           onClick={() => onNavigate('upload')}
           style={{
             fontFamily: 'DM Sans, sans-serif',
@@ -108,6 +109,7 @@ export default function TopNav({ page, onNavigate, scrolled, isDarkPage }: Props
         >
           Add piece
         </button>
+        <button onClick={onLogout} aria-label="Sign out" title="Sign out" style={{ padding: '8px 10px', border: 'none', background: 'transparent', color: textColor, cursor: 'pointer', fontSize: 18 }}>↗</button></div>
       </div>
     </header>
   )

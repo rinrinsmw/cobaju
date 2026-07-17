@@ -1,281 +1,116 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Page } from '../data'
+import { apiRequest, type ClothingCategory, type ClothingItem, type ProcessingResult } from '../api'
 
-interface Props { onNavigate: (p: Page) => void }
-type Stage = 'idle' | 'uploading' | 'analyzing' | 'done'
+interface Props { onNavigate: (page: Page) => void }
+type Stage = 'idle' | 'uploading' | 'analyzing' | 'done' | 'error'
+const categories: ClothingCategory[] = ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'bag', 'accessory']
+const delay = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
 
 export default function Upload({ onNavigate }: Props) {
+  const queryClient = useQueryClient()
+  const inputRef = useRef<HTMLInputElement>(null)
   const [stage, setStage] = useState<Stage>('idle')
   const [dragging, setDragging] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [preview, setPreview] = useState('')
+  const [item, setItem] = useState<ClothingItem | null>(null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
 
-  const simulate = () => {
-    setStage('uploading')
-    setTimeout(() => setStage('analyzing'), 1000)
-    setTimeout(() => setStage('done'), 2400)
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview) }, [preview])
+
+  const runAnalysis = async (draft: ClothingItem) => {
+    setError(''); setStage('analyzing')
+    try {
+      await apiRequest(`/wardrobe/items/${draft.id}/analyze`, { method: 'POST' })
+      for (let attempt = 0; attempt < 90; attempt += 1) {
+        await delay(1000)
+        const status = await apiRequest<ProcessingResult>(`/wardrobe/items/${draft.id}/status`)
+        if (status.needs_confirmation) {
+          setItem(await apiRequest<ClothingItem>(`/wardrobe/items/${draft.id}`))
+          setStage('done')
+          return
+        }
+        if (status.status === 'failed') throw new Error('Cobaju could not identify one clear clothing item in this image.')
+      }
+      throw new Error('Analysis is taking longer than expected. You can retry from this page.')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Analysis failed.')
+      setStage('error')
+    }
   }
 
-  const handleSave = () => {
-    setSaved(true)
-    setTimeout(() => onNavigate('wardrobe'), 1200)
+  const upload = async (file: File) => {
+    if (preview) URL.revokeObjectURL(preview)
+    setPreview(URL.createObjectURL(file)); setError(''); setStage('uploading')
+    const form = new FormData(); form.append('image', file)
+    try {
+      const draft = await apiRequest<ClothingItem>('/wardrobe/items/upload', { method: 'POST', body: form })
+      setItem(draft)
+      await runAnalysis(draft)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Upload failed.')
+      setStage('error')
+    }
   }
 
-  return (
-    <div style={{ paddingTop: 64, background: '#f7f4ef', minHeight: '100vh' }}>
-      {/* Header */}
-      <div style={{ background: '#f0ece4', padding: '72px 60px 56px', borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
-        <p style={{
-          fontFamily: 'DM Sans, sans-serif', fontSize: 11,
-          letterSpacing: '0.16em', textTransform: 'uppercase',
-          color: '#a09080', marginBottom: 16,
-        }}>New piece</p>
-        <h1 style={{
-          fontFamily: "'Playfair Display', serif",
-          fontSize: 'clamp(36px, 4vw, 56px)',
-          fontWeight: 700, lineHeight: 1.05, color: '#1a1816',
-        }}>
-          Add to your<br />
-          <em style={{ fontStyle: 'italic', color: '#c9a96e' }}>collection.</em>
-        </h1>
-      </div>
+  const choose = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) void upload(file) }
+  const drop = (event: DragEvent) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer.files[0]; if (file) void upload(file) }
+  const change = (field: keyof ClothingItem, value: string) => setItem(current => current ? { ...current, [field]: value } : current)
 
-      {/* Body */}
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '64px 60px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 60 }}>
-        {/* Left: drop zone or preview */}
-        <div>
-          {stage === 'idle' ? (
-            <div
-              onDragOver={e => { e.preventDefault(); setDragging(true) }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={e => { e.preventDefault(); setDragging(false); simulate() }}
-              onClick={simulate}
-              style={{
-                height: 460,
-                border: dragging ? '1.5px solid #1a1816' : '1.5px dashed rgba(0,0,0,0.2)',
-                borderRadius: 8,
-                background: dragging ? 'rgba(26,24,22,0.03)' : 'transparent',
-                display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                gap: 20, cursor: 'pointer',
-                transition: 'border-color 0.2s, background 0.2s',
-              }}
-            >
-              <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="rgba(0,0,0,0.25)" strokeWidth={1.2}>
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <path d="M3 15l5-5 4 4 3-3 6 6" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-              </svg>
-              <div style={{ textAlign: 'center' }}>
-                <p style={{
-                  fontFamily: "'Playfair Display', serif",
-                  fontSize: 20, color: '#1a1816', marginBottom: 8,
-                }}>Drop your photo here</p>
-                <p style={{
-                  fontFamily: 'DM Sans, sans-serif', fontSize: 13,
-                  color: '#a09080', lineHeight: 1.6,
-                }}>JPG, PNG or WebP · One item per photo<br />Max 5 MB</p>
-              </div>
-              <button style={{
-                fontFamily: 'DM Sans, sans-serif', fontSize: 12, fontWeight: 600,
-                letterSpacing: '0.06em', textTransform: 'uppercase',
-                background: '#1a1816', color: '#f7f4ef',
-                border: 'none', borderRadius: 999, padding: '10px 24px', cursor: 'pointer',
-              }}>
-                Choose file
-              </button>
-            </div>
-          ) : (
-            <div style={{
-              height: 460, borderRadius: 8, overflow: 'hidden',
-              background: '#e8e0d4', position: 'relative',
-            }}>
-              <img
-                src="https://images.unsplash.com/photo-1596755094514-f87e34085b2c?w=600&h=600&fit=crop&auto=format"
-                alt="uploaded shirt"
-                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', opacity: stage === 'done' ? 1 : 0.5, transition: 'opacity 0.5s' }}
-              />
-              {stage !== 'done' && (
-                <div style={{
-                  position: 'absolute', inset: 0,
-                  display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', justifyContent: 'center', gap: 14,
-                  background: 'rgba(247,244,239,0.7)', backdropFilter: 'blur(4px)',
-                }}>
-                  {/* Spinner */}
-                  <div style={{
-                    width: 36, height: 36,
-                    border: '2px solid rgba(26,24,22,0.12)',
-                    borderTop: '2px solid #1a1816',
-                    borderRadius: '50%',
-                    animation: 'spin 0.7s linear infinite',
-                  }} />
-                  <p style={{
-                    fontFamily: 'DM Sans, sans-serif', fontSize: 13, color: '#1a1816',
-                  }}>
-                    {stage === 'uploading' ? 'Uploading…' : 'Analysing with AI…'}
-                  </p>
-                </div>
-              )}
-              {stage === 'done' && (
-                <div style={{
-                  position: 'absolute', top: 14, left: 14,
-                  fontFamily: 'DM Sans, sans-serif', fontSize: 11,
-                  letterSpacing: '0.06em', textTransform: 'uppercase',
-                  background: '#f0ece4', color: '#1a1816',
-                  padding: '6px 12px', borderRadius: 999,
-                }}>
-                  ✓ Background removed
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+  const save = async () => {
+    if (!item) return
+    setSaving(true); setError('')
+    try {
+      await apiRequest(`/wardrobe/items/${item.id}`, { method: 'PATCH', body: JSON.stringify({ name: item.name, category: item.category, color: item.color, description: item.description }) })
+      await apiRequest(`/wardrobe/items/${item.id}/confirm`, { method: 'POST' })
+      await queryClient.invalidateQueries({ queryKey: ['wardrobe'] })
+      onNavigate('wardrobe')
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not save this piece.') }
+    finally { setSaving(false) }
+  }
 
-        {/* Right: analysis */}
-        <div>
-          {stage === 'idle' && (
-            <>
-              <h2 style={{
-                fontFamily: "'Playfair Display', serif",
-                fontSize: 28, fontWeight: 700, color: '#1a1816', marginBottom: 12,
-              }}>AI will handle the rest</h2>
-              <p style={{
-                fontFamily: 'DM Sans, sans-serif', fontSize: 14, lineHeight: 1.7,
-                color: '#6b6055', marginBottom: 44,
-              }}>
-                Upload a clear photo of one clothing item. Cobaju identifies category, primary colour, style, and occasion — then adds it to your wardrobe instantly.
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-                {[
-                  { n: '01', title: 'Upload', desc: 'One item, clear background preferred.' },
-                  { n: '02', title: 'Analyse', desc: 'Category, colour, and occasion tagged automatically.' },
-                  { n: '03', title: 'Save', desc: 'Review any field and confirm.' },
-                ].map(s => (
-                  <div key={s.n} style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
-                    <span style={{
-                      fontFamily: "'Playfair Display', serif",
-                      fontSize: 13, color: '#c9a96e', flexShrink: 0, marginTop: 2,
-                    }}>{s.n}</span>
-                    <div>
-                      <div style={{
-                        fontFamily: 'DM Sans, sans-serif', fontSize: 14, fontWeight: 600,
-                        color: '#1a1816', marginBottom: 3,
-                      }}>{s.title}</div>
-                      <div style={{
-                        fontFamily: 'DM Sans, sans-serif', fontSize: 13,
-                        color: '#a09080', lineHeight: 1.5,
-                      }}>{s.desc}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {(stage === 'uploading' || stage === 'analyzing') && (
-            <div>
-              <h2 style={{
-                fontFamily: "'Playfair Display', serif",
-                fontSize: 28, fontWeight: 700, color: '#1a1816', marginBottom: 32,
-              }}>Processing…</h2>
-              {[
-                { label: 'Image received', done: true },
-                { label: 'Background removed', done: stage === 'analyzing' },
-                { label: 'AI classification', done: false },
-              ].map((s, i) => (
-                <div key={i} style={{
-                  display: 'flex', gap: 14, alignItems: 'center',
-                  padding: '14px 0', borderBottom: '1px solid rgba(0,0,0,0.07)',
-                }}>
-                  <div style={{
-                    width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
-                    background: s.done ? '#1a1816' : 'rgba(0,0,0,0.07)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: s.done ? '#f7f4ef' : 'transparent', fontSize: 12,
-                  }}>
-                    {s.done ? '✓' : ''}
-                  </div>
-                  <span style={{
-                    fontFamily: 'DM Sans, sans-serif', fontSize: 14,
-                    color: s.done ? '#1a1816' : '#a09080',
-                  }}>{s.label}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {stage === 'done' && (
-            <div>
-              <h2 style={{
-                fontFamily: "'Playfair Display', serif",
-                fontSize: 28, fontWeight: 700, color: '#1a1816', marginBottom: 28,
-              }}>Analysis complete</h2>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-                {[
-                  { label: 'Category', value: 'Shirt', type: 'select', opts: ['Shirt', 'T-Shirt', 'Jacket', 'Trousers', 'Shoes'] },
-                  { label: 'Colour', value: 'White', type: 'input' },
-                  { label: 'Style', value: 'Smart casual', type: 'select', opts: ['Casual', 'Smart casual', 'Formal'] },
-                  { label: 'Occasion', value: 'Office, dinner', type: 'input' },
-                ].map(f => (
-                  <div key={f.label}>
-                    <label style={{
-                      display: 'block', fontFamily: 'DM Sans, sans-serif',
-                      fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase',
-                      color: '#a09080', marginBottom: 6,
-                    }}>{f.label}</label>
-                    {f.type === 'select' ? (
-                      <select defaultValue={f.value} style={{
-                        width: '100%', padding: '10px 12px', fontFamily: 'DM Sans, sans-serif',
-                        fontSize: 14, color: '#1a1816',
-                        border: '1px solid rgba(0,0,0,0.12)', borderRadius: 6,
-                        background: 'white', outline: 'none',
-                      }}>
-                        {f.opts?.map(o => <option key={o}>{o}</option>)}
-                      </select>
-                    ) : (
-                      <input defaultValue={f.value} style={{
-                        width: '100%', padding: '10px 12px', fontFamily: 'DM Sans, sans-serif',
-                        fontSize: 14, color: '#1a1816',
-                        border: '1px solid rgba(0,0,0,0.12)', borderRadius: 6,
-                        background: 'white', outline: 'none',
-                      }} />
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginBottom: 28 }}>
-                <label style={{
-                  display: 'block', fontFamily: 'DM Sans, sans-serif',
-                  fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase',
-                  color: '#a09080', marginBottom: 6,
-                }}>Description</label>
-                <input defaultValue="White Oxford shirt, smart-casual. Good for office and dinner." style={{
-                  width: '100%', padding: '10px 12px', fontFamily: 'DM Sans, sans-serif',
-                  fontSize: 14, color: '#1a1816',
-                  border: '1px solid rgba(0,0,0,0.12)', borderRadius: 6,
-                  background: 'white', outline: 'none',
-                }} />
-              </div>
-
-              <button onClick={handleSave} style={{
-                width: '100%', padding: '14px',
-                fontFamily: 'DM Sans, sans-serif', fontSize: 13, fontWeight: 600,
-                letterSpacing: '0.04em', textTransform: 'uppercase',
-                background: saved ? '#c9a96e' : '#1a1816',
-                color: saved ? '#1a1816' : '#f7f4ef',
-                border: 'none', borderRadius: 6, cursor: 'pointer',
-                transition: 'background 0.3s, color 0.3s',
-              }}>
-                {saved ? '✓ Saved to wardrobe' : 'Save to wardrobe'}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  return <div style={{ paddingTop: 64, background: '#f7f4ef', minHeight: '100vh' }}>
+    <div className="page-header" style={{ background: '#f0ece4', padding: '72px 60px 56px', borderBottom: '1px solid rgba(0,0,0,.06)' }}>
+      <p style={eyebrow}>New piece</p><h1 style={title}>Add to your<br /><em style={{ color: '#c9a96e' }}>collection.</em></h1>
     </div>
-  )
+    <div className="two-column page-content" style={{ maxWidth: 1100, margin: '0 auto', padding: '64px 60px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 60 }}>
+      <div>
+        <input ref={inputRef} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={choose} />
+        {stage === 'idle' ? <button onClick={() => inputRef.current?.click()} onDragOver={event => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={drop} style={{ ...dropzone, borderColor: dragging ? '#1a1816' : 'rgba(0,0,0,.2)' }}>
+          <span style={{ fontSize: 40, color: '#a09080' }}>▧</span><span style={{ fontFamily: "'Playfair Display', serif", fontSize: 20 }}>Drop your photo here</span><span style={{ color: '#a09080', fontSize: 13 }}>JPG, PNG or WebP · One item · Max 5 MB</span><span style={darkPill}>Choose file</span>
+        </button> : <div style={{ height: 460, borderRadius: 8, overflow: 'hidden', background: '#e8e0d4', position: 'relative' }}>
+          <img src={preview} alt="Selected clothing" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: stage === 'done' || stage === 'error' ? 1 : .45 }} />
+          {(stage === 'uploading' || stage === 'analyzing') && <div style={overlay}><div className="spinner" /><span>{stage === 'uploading' ? 'Creating your piece…' : 'Analysing with AI…'}</span></div>}
+        </div>}
+      </div>
+      <div>
+        {stage === 'idle' && <Intro />}
+        {(stage === 'uploading' || stage === 'analyzing') && <Processing stage={stage} />}
+        {stage === 'error' && <div><h2 style={sectionTitle}>Something needs attention</h2><p role="alert" style={{ color: '#9f3a32', lineHeight: 1.6, marginBottom: 24 }}>{error}</p>{item && <button onClick={() => void runAnalysis(item)} style={darkButton}>Retry analysis</button>}<button onClick={() => { setStage('idle'); setItem(null); setError('') }} style={secondaryButton}>Choose another image</button></div>}
+        {stage === 'done' && item && <div><h2 style={sectionTitle}>Analysis complete</h2><div style={{ display: 'grid', gap: 14 }}>
+          <Field label="Name"><input value={item.name} onChange={event => change('name', event.target.value)} style={fieldStyle} /></Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><Field label="Category"><select value={item.category} onChange={event => change('category', event.target.value)} style={fieldStyle}>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Colour"><input value={item.color} onChange={event => change('color', event.target.value)} style={fieldStyle} /></Field></div>
+          <Field label="Description"><textarea value={item.description ?? ''} onChange={event => change('description', event.target.value)} rows={4} style={fieldStyle} /></Field>
+          {error && <p role="alert" style={{ color: '#9f3a32', fontSize: 13 }}>{error}</p>}
+          <button disabled={saving} onClick={() => void save()} style={darkButton}>{saving ? 'Saving…' : 'Save to wardrobe'}</button>
+        </div></div>}
+      </div>
+    </div>
+  </div>
 }
+
+function Intro() { return <><h2 style={sectionTitle}>AI will handle the rest</h2><p style={{ color: '#6b6055', lineHeight: 1.7, marginBottom: 38 }}>Upload a clear photo of one clothing item. Cobaju identifies its category, colour, and description for your review.</p>{['Upload one clear item', 'Analyse visible details', 'Review and save'].map((text, index) => <div key={text} style={{ display: 'flex', gap: 18, padding: '13px 0', borderBottom: '1px solid rgba(0,0,0,.07)' }}><span style={{ color: '#c9a96e' }}>0{index + 1}</span>{text}</div>)}</> }
+function Processing({ stage }: { stage: Stage }) { return <><h2 style={sectionTitle}>Processing…</h2>{['Image and record created', 'Clothing guardrail', 'Metadata analysis'].map((text, index) => <div key={text} style={{ padding: '14px 0', borderBottom: '1px solid rgba(0,0,0,.07)', color: index === 0 || stage === 'analyzing' ? '#1a1816' : '#a09080' }}>{index === 0 ? '✓ ' : '○ '}{text}</div>)}</> }
+function Field({ label, children }: { label: string; children: ReactNode }) { return <label style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: '#a09080' }}>{label}{children}</label> }
+
+const eyebrow = { fontSize: 11, letterSpacing: '.16em', textTransform: 'uppercase' as const, color: '#a09080', marginBottom: 16 }
+const title = { fontFamily: "'Playfair Display', serif", fontSize: 'clamp(36px, 4vw, 56px)', lineHeight: 1.05 }
+const sectionTitle = { fontFamily: "'Playfair Display', serif", fontSize: 28, marginBottom: 24 }
+const dropzone = { width: '100%', height: 460, border: '1.5px dashed', borderRadius: 8, background: 'transparent', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', justifyContent: 'center', gap: 18, cursor: 'pointer' }
+const overlay = { position: 'absolute' as const, inset: 0, display: 'flex', flexDirection: 'column' as const, alignItems: 'center', justifyContent: 'center', gap: 14, background: 'rgba(247,244,239,.72)' }
+const fieldStyle = { display: 'block', width: '100%', marginTop: 7, padding: '11px 12px', border: '1px solid rgba(0,0,0,.13)', borderRadius: 6, background: 'white', font: 'inherit', color: '#1a1816' }
+const darkButton = { width: '100%', padding: 13, border: 0, borderRadius: 6, background: '#1a1816', color: '#f7f4ef', cursor: 'pointer', fontWeight: 600 }
+const secondaryButton = { ...darkButton, marginTop: 10, background: 'transparent', color: '#1a1816', border: '1px solid rgba(0,0,0,.14)' }
+const darkPill = { padding: '10px 22px', borderRadius: 999, background: '#1a1816', color: '#f7f4ef', fontSize: 12 }

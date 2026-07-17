@@ -170,7 +170,20 @@ Supported categories are `top`, `bottom`, `dress`, `outerwear`, `shoes`,
 `bag`, and `accessory`. Manually created items have a server-controlled
 `completed` processing status. Each user may have at most 15 completed items.
 
-Upload one original image to an item you own:
+Create a pending wardrobe item and upload its original image in one request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wardrobe/items/upload \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -F 'image=@/absolute/path/to/clothing.jpg'
+```
+
+This combined endpoint is used by the Phase 12 frontend flow. It avoids a separate
+placeholder-item request and removes the stored file if database creation
+fails. Pending upload drafts do not count toward the 15 confirmed-item limit.
+
+The earlier endpoint for attaching an image to an existing item remains
+available:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/image \
@@ -321,9 +334,18 @@ curl http://127.0.0.1:8000/recommendations \
 
 History never returns another user's records. If a selected item is later
 deleted, the record remains readable and returns that item with
-`available: false`. The Lookbook uses the Vite `/api` development proxy. Until
-Phase 12 adds the full authentication UI, it reads the Bearer token from the
-browser local storage key `access_token`.
+`available: false`.
+
+## Frontend integration
+
+Phase 12 connects the approved React interface through the Vite `/api` proxy.
+Register or sign in from the frontend, then use Wardrobe, Add piece, Stylist,
+and Lookbook without manually copying a token. The token remains in the browser
+local storage key `access_token` and is validated with `/auth/me` when the app
+opens. Upload creates the pending record and stores the image in one request,
+then queues analysis, polls status, and presents generated metadata for review
+and confirmation. TanStack Query manages server data, cache invalidation,
+loading states, and error states.
 
 The applications can also be started with their native package managers:
 

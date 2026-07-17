@@ -95,6 +95,24 @@ body {
 @media (max-width: 900px) { .masonry { columns: 2; } }
 @media (max-width: 500px) { .masonry { columns: 2; } }
 
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 2px solid rgba(26,24,22,.12);
+  border-top-color: #1a1816;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 760px) {
+  .desktop-nav { display: none !important; }
+  .page-header { padding: 48px 22px 38px !important; }
+  .page-content { padding: 30px 22px !important; }
+  .filter-bar { padding: 12px 22px !important; top: 64px !important; }
+  .two-column, .stylist-layout { grid-template-columns: 1fr !important; gap: 28px !important; }
+}
+
 /* Nav blur */
 .nav-blur {
   background: rgba(247,244,239,0.88);

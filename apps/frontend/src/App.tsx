@@ -6,9 +6,13 @@ import Wardrobe from './components/Wardrobe'
 import Upload from './components/Upload'
 import Stylist from './components/Stylist'
 import History from './components/History'
+import AuthScreen from './components/AuthScreen'
+import { useAuth } from './auth'
 
 export default function App() {
-  const [page, setPage] = useState<Page>('dashboard')
+  const { user, checking, logout } = useAuth()
+  const hashPage = window.location.hash.slice(1) as Page
+  const [page, setPage] = useState<Page>(['dashboard', 'wardrobe', 'upload', 'stylist', 'history'].includes(hashPage) ? hashPage : 'dashboard')
   const [chatPrefill, setChatPrefill] = useState('')
   const [key, setKey] = useState(0)
   const [scrolled, setScrolled] = useState(false)
@@ -19,7 +23,17 @@ export default function App() {
     return () => window.removeEventListener('scroll', handler)
   }, [])
 
+  useEffect(() => {
+    const syncHash = () => {
+      const nextPage = window.location.hash.slice(1) as Page
+      if (['dashboard', 'wardrobe', 'upload', 'stylist', 'history'].includes(nextPage)) setPage(nextPage)
+    }
+    window.addEventListener('hashchange', syncHash)
+    return () => window.removeEventListener('hashchange', syncHash)
+  }, [])
+
   const navigate = (p: Page, prefill = '') => {
+    window.location.hash = p
     setPage(p)
     setChatPrefill(prefill)
     setKey(k => k + 1)
@@ -28,9 +42,12 @@ export default function App() {
 
   const isDark = page === 'dashboard'
 
+  if (checking) return <div style={{ minHeight: '100vh', background: '#100f0d', color: '#c9a96e', display: 'grid', placeItems: 'center' }}>Opening your wardrobe…</div>
+  if (!user) return <AuthScreen />
+
   return (
     <div style={{ minHeight: '100vh', background: '#f7f4ef' }}>
-      <TopNav page={page} onNavigate={navigate} scrolled={scrolled} isDarkPage={isDark} />
+      <TopNav page={page} onNavigate={navigate} scrolled={scrolled} isDarkPage={isDark} onLogout={logout} />
       <div key={key} className="page-enter">
         {page === 'dashboard' && <Dashboard onNavigate={navigate} />}
         {page === 'wardrobe' && <Wardrobe onNavigate={navigate} />}

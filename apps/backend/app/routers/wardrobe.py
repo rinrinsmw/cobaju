@@ -9,6 +9,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
@@ -41,6 +42,7 @@ from app.services.wardrobe import (
     attach_image_to_clothing_item,
     confirm_analyzed_item,
     create_clothing_item,
+    create_uploaded_clothing_item,
     delete_clothing_item,
     get_owned_clothing_item,
     list_confirmed_clothing_items,
@@ -168,6 +170,61 @@ def search_items(
         raise retrieval_unavailable_response() from error
 
 
+@router.post(
+    "/upload",
+    response_model=ClothingItemRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_item_with_image(
+    image: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ClothingItem:
+    """Create one pending wardrobe item and store its original image."""
+
+    user_id = require_user_id(current_user)
+    settings = get_settings()
+    stored_path: str | None = None
+    item_created = False
+    try:
+        stored_path = await save_original_image(
+            image,
+            settings.resolved_upload_directory,
+            user_id,
+        )
+        item = create_uploaded_clothing_item(session, user_id, stored_path)
+        item_created = True
+        return item
+    except UnsupportedImageError as error:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Image must be a valid JPG, PNG, or WebP file",
+        ) from error
+    except ImageTooLargeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Image must not exceed 5 MB",
+        ) from error
+    except SQLAlchemyError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create clothing item",
+        ) from error
+    except OSError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not store image",
+        ) from error
+    finally:
+        if stored_path is not None and not item_created:
+            try:
+                delete_stored_image(settings.resolved_upload_directory, stored_path)
+            except OSError:
+                pass
+        await image.close()
+
+
 @router.get("/{item_id}", response_model=ClothingItemRead)
 def read_item(
     item_id: int,
@@ -256,6 +313,27 @@ async def upload_item_image(
             except OSError:
                 pass
         await image.close()
+
+
+@router.get("/{item_id}/image", response_class=FileResponse)
+def read_item_image(
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    """Return an owned item's stored image for the authenticated frontend."""
+
+    try:
+        item = get_owned_clothing_item(session, require_user_id(current_user), item_id)
+    except ClothingItemNotFoundError as error:
+        raise not_found_response() from error
+    if item.original_image_path is None:
+        raise not_found_response()
+    upload_directory = get_settings().resolved_upload_directory
+    image_path = (upload_directory / item.original_image_path).resolve()
+    if not image_path.is_relative_to(upload_directory) or not image_path.is_file():
+        raise not_found_response()
+    return FileResponse(image_path)
 
 
 @router.post(

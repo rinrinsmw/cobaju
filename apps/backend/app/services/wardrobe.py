@@ -5,7 +5,7 @@ from typing import Protocol
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.models.clothing_item import ClothingItem, ProcessingStatus
+from app.models.clothing_item import ClothingCategory, ClothingItem, ProcessingStatus
 from app.schemas.wardrobe import (
     ClothingItemCreate,
     ClothingItemUpdate,
@@ -14,6 +14,8 @@ from app.schemas.wardrobe import (
 
 
 MAX_CONFIRMED_ITEMS = 15
+PENDING_ITEM_NAME = "Pending analysis"
+PENDING_ITEM_COLOR = "Unknown"
 
 
 class ClothingItemNotFoundError(Exception):
@@ -71,6 +73,37 @@ def create_clothing_item(
     try:
         if vector_index is not None:
             vector_index.upsert_item(item)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    session.refresh(item)
+    return item
+
+
+def create_uploaded_clothing_item(
+    session: Session,
+    user_id: int,
+    original_image_path: str,
+) -> ClothingItem:
+    """Create the pending database record for a newly stored image.
+
+    Vision analysis replaces the temporary metadata before the user can
+    confirm the item. Keeping this small operation in the service lets the
+    multipart route cleanly remove the stored file if the commit fails.
+    """
+
+    item = ClothingItem(
+        user_id=user_id,
+        name=PENDING_ITEM_NAME,
+        category=ClothingCategory.ACCESSORY,
+        color=PENDING_ITEM_COLOR,
+        original_image_path=original_image_path,
+        analysis_completed=False,
+        processing_status=ProcessingStatus.PENDING,
+    )
+    session.add(item)
+    try:
         session.commit()
     except Exception:
         session.rollback()

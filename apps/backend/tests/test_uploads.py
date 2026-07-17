@@ -84,6 +84,119 @@ def create_item(client: TestClient, headers: dict[str, str], name: str = "Shirt"
         ("item.webp", "image/webp", WEBP_BYTES, ".webp"),
     ],
 )
+def test_combined_upload_creates_pending_item_and_stores_image(
+    client: tuple[TestClient, Path],
+    filename: str,
+    content_type: str,
+    content: bytes,
+    extension: str,
+) -> None:
+    test_client, upload_directory = client
+    headers = create_account_and_headers(test_client, "combined@example.com")
+
+    response = test_client.post(
+        "/wardrobe/items/upload",
+        headers=headers,
+        files={"image": (filename, content, content_type)},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Pending analysis"
+    assert body["color"] == "Unknown"
+    assert body["analysis_completed"] is False
+    assert body["processing_status"] == "pending"
+    assert body["original_image_path"].startswith("1/")
+    assert body["original_image_path"].endswith(extension)
+    assert (upload_directory / body["original_image_path"]).read_bytes() == content
+
+    listed_items = test_client.get("/wardrobe/items", headers=headers).json()
+    assert [item["id"] for item in listed_items] == [body["id"]]
+
+
+def test_combined_upload_rejects_invalid_image_without_creating_item(
+    client: tuple[TestClient, Path],
+) -> None:
+    test_client, upload_directory = client
+    headers = create_account_and_headers(test_client, "combined-invalid@example.com")
+
+    response = test_client.post(
+        "/wardrobe/items/upload",
+        headers=headers,
+        files={"image": ("spoofed.png", JPEG_BYTES, "image/png")},
+    )
+
+    assert response.status_code == 415
+    assert list(upload_directory.rglob("*.*")) == []
+    assert test_client.get("/wardrobe/items", headers=headers).json() == []
+
+
+def test_combined_upload_requires_authentication(
+    client: tuple[TestClient, Path],
+) -> None:
+    test_client, upload_directory = client
+
+    response = test_client.post(
+        "/wardrobe/items/upload",
+        files={"image": ("shirt.jpg", JPEG_BYTES, "image/jpeg")},
+    )
+
+    assert response.status_code == 401
+    assert list(upload_directory.rglob("*.*")) == []
+
+
+def test_combined_upload_is_not_counted_as_a_confirmed_item(
+    client: tuple[TestClient, Path],
+) -> None:
+    test_client, _ = client
+    headers = create_account_and_headers(test_client, "combined-limit@example.com")
+    for item_number in range(15):
+        create_item(test_client, headers, f"Confirmed item {item_number}")
+
+    response = test_client.post(
+        "/wardrobe/items/upload",
+        headers=headers,
+        files={"image": ("shirt.jpg", JPEG_BYTES, "image/jpeg")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["processing_status"] == "pending"
+
+
+def test_combined_upload_removes_file_when_item_creation_fails(
+    client: tuple[TestClient, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_client, upload_directory = client
+    headers = create_account_and_headers(test_client, "combined-failure@example.com")
+
+    def fail_item_creation(*args: object, **kwargs: object) -> None:
+        raise SQLAlchemyError("simulated database failure")
+
+    monkeypatch.setattr(
+        wardrobe_router,
+        "create_uploaded_clothing_item",
+        fail_item_creation,
+    )
+    response = test_client.post(
+        "/wardrobe/items/upload",
+        headers=headers,
+        files={"image": ("shirt.jpg", JPEG_BYTES, "image/jpeg")},
+    )
+
+    assert response.status_code == 500
+    assert list(upload_directory.rglob("*.*")) == []
+    assert test_client.get("/wardrobe/items", headers=headers).json() == []
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "content", "extension"),
+    [
+        ("item.jpg", "image/jpeg", JPEG_BYTES, ".jpg"),
+        ("item.png", "image/png", PNG_BYTES, ".png"),
+        ("item.webp", "image/webp", WEBP_BYTES, ".webp"),
+    ],
+)
 def test_valid_supported_image_is_stored_and_recorded(
     client: tuple[TestClient, Path],
     filename: str,
@@ -278,3 +391,24 @@ def test_deleting_item_removes_its_local_image(
 
     assert response.status_code == 204
     assert not stored_file.exists()
+
+
+def test_owner_can_read_image_but_another_user_cannot(
+    client: tuple[TestClient, Path],
+) -> None:
+    test_client, _ = client
+    owner_headers = create_account_and_headers(test_client, "image-owner@example.com")
+    other_headers = create_account_and_headers(test_client, "image-other@example.com")
+    item_id = create_item(test_client, owner_headers)
+    test_client.post(
+        f"/wardrobe/items/{item_id}/image",
+        headers=owner_headers,
+        files={"image": ("shirt.jpg", JPEG_BYTES, "image/jpeg")},
+    )
+
+    owned = test_client.get(f"/wardrobe/items/{item_id}/image", headers=owner_headers)
+    cross_user = test_client.get(f"/wardrobe/items/{item_id}/image", headers=other_headers)
+
+    assert owned.status_code == 200
+    assert owned.content == JPEG_BYTES
+    assert cross_user.status_code == 404
