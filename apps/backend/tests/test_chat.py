@@ -3,8 +3,11 @@
 from collections.abc import Generator
 
 import anyio
+import httpx
 import pytest
+from agents.exceptions import AgentsException
 from fastapi.testclient import TestClient
+from openai import APIConnectionError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -29,7 +32,9 @@ from app.schemas.chat import (
 )
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import contains_prompt_injection
+from app.services import stylist_agent as stylist_agent_module
 from app.services.stylist_agent import (
+    OpenAIAgentsStylistRunner,
     StylistAgentError,
     StylistRunOutcome,
     ToolBudgetHooks,
@@ -294,6 +299,160 @@ def test_tool_budget_stops_before_excess_call_and_reads_saved_item_ids() -> None
 
     assert hooks.tool_names == ["search_wardrobe", "save_recommendation"]
     assert hooks.validated_item_ids == {12}
+
+
+class FakeOpenAIClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeMCPServer:
+    async def __aenter__(self) -> "FakeMCPServer":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        del args
+
+
+def exercise_production_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_result: object,
+    *,
+    mcp_start_error: Exception | None = None,
+) -> tuple[BaseException, FakeOpenAIClient]:
+    client = FakeOpenAIClient()
+    monkeypatch.setattr(stylist_agent_module, "AsyncOpenAI", lambda **kwargs: client)
+
+    class ConfiguredMCPServer(FakeMCPServer):
+        async def __aenter__(self) -> FakeMCPServer:
+            if mcp_start_error is not None:
+                raise mcp_start_error
+            return await super().__aenter__()
+
+    monkeypatch.setattr(
+        stylist_agent_module,
+        "MCPServerStdio",
+        lambda **kwargs: ConfiguredMCPServer(),
+    )
+
+    async def fake_run(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        if isinstance(runner_result, Exception):
+            raise runner_result
+        return runner_result
+
+    monkeypatch.setattr(stylist_agent_module.Runner, "run", fake_run)
+    runner = OpenAIAgentsStylistRunner(
+        Settings(
+            openrouter_api_key="test-key",
+            openrouter_stylist_model="stylist-model",
+        )
+    )
+
+    async def run() -> BaseException:
+        try:
+            await runner.run("private request", current_user())
+        except BaseException as error:
+            return error
+        raise AssertionError("Runner did not raise")
+
+    return anyio.run(run), client
+
+
+def test_agents_exception_is_logged_wrapped_and_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = AgentsException("provider failed")
+
+    with caplog.at_level("ERROR", logger="app.services.stylist_agent"):
+        raised, client = exercise_production_runner(monkeypatch, original)
+
+    assert isinstance(raised, StylistAgentError)
+    assert raised.__cause__ is original
+    assert "Stylist agent SDK failure" in caplog.text
+    assert "private request" not in caplog.text
+    assert "test-key" not in caplog.text
+    assert client.closed is True
+
+
+def test_unexpected_exception_is_logged_wrapped_and_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = APIConnectionError(
+        request=httpx.Request(
+            "POST", "https://openrouter.ai/api/v1/chat/completions"
+        )
+    )
+
+    with caplog.at_level("ERROR", logger="app.services.stylist_agent"):
+        raised, client = exercise_production_runner(monkeypatch, original)
+
+    assert isinstance(raised, StylistAgentError)
+    assert raised.__cause__ is original
+    assert "Unexpected stylist agent failure" in caplog.text
+    assert "Traceback" in caplog.text
+    assert "private request" not in caplog.text
+    assert "test-key" not in caplog.text
+    assert client.closed is True
+
+
+def test_tool_call_limit_is_not_wrapped_and_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = ToolCallLimitExceeded("Stylist tool-call limit exceeded")
+
+    with caplog.at_level("ERROR", logger="app.services.stylist_agent"):
+        raised, client = exercise_production_runner(monkeypatch, original)
+
+    assert raised is original
+    assert "Stylist agent SDK failure" not in caplog.text
+    assert "Unexpected stylist agent failure" not in caplog.text
+    assert client.closed is True
+
+
+def test_unexpected_response_parsing_exception_is_logged_and_wrapped(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = RuntimeError("simulated response parsing failure")
+
+    class BrokenResult:
+        @property
+        def final_output(self) -> object:
+            raise original
+
+    with caplog.at_level("ERROR", logger="app.services.stylist_agent"):
+        raised, client = exercise_production_runner(monkeypatch, BrokenResult())
+
+    assert isinstance(raised, StylistAgentError)
+    assert raised.__cause__ is original
+    assert "Unexpected stylist agent failure" in caplog.text
+    assert client.closed is True
+
+
+def test_mcp_startup_exception_is_logged_wrapped_and_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = RuntimeError("simulated MCP startup failure")
+
+    with caplog.at_level("ERROR", logger="app.services.stylist_agent"):
+        raised, client = exercise_production_runner(
+            monkeypatch,
+            object(),
+            mcp_start_error=original,
+        )
+
+    assert isinstance(raised, StylistAgentError)
+    assert raised.__cause__ is original
+    assert "Unexpected stylist agent failure" in caplog.text
+    assert client.closed is True
 
 
 @pytest.fixture

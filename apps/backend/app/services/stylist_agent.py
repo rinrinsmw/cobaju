@@ -1,6 +1,7 @@
 """OpenAI Agents SDK runner for the single Wardrobe Stylist Agent."""
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -21,6 +22,9 @@ from app.models.user import User
 from app.schemas.chat import StylistResponse
 from app.schemas.mcp import SaveRecommendationOutput
 from app.services.mcp_client import build_user_scoped_mcp_parameters
+
+
+logger = logging.getLogger(__name__)
 
 
 class StylistAgentError(Exception):
@@ -165,7 +169,6 @@ class OpenAIAgentsStylistRunner:
                     model_settings=ModelSettings(
                         temperature=self.settings.stylist_temperature,
                         parallel_tool_calls=False,
-                        extra_body={"provider": {"require_parameters": True}},
                     ),
                     mcp_servers=[wardrobe_server],
                     output_type=StylistResponse,
@@ -187,18 +190,23 @@ class OpenAIAgentsStylistRunner:
                         trace_include_sensitive_data=False,
                     ),
                 )
+            response = result.final_output
+            if not isinstance(response, StylistResponse):
+                raise StylistAgentError("Stylist returned an invalid response")
+            return StylistRunOutcome(
+                response=response,
+                tool_names=hooks.tool_names,
+                validated_item_ids=hooks.validated_item_ids,
+            )
         except ToolCallLimitExceeded:
             raise
+        except StylistAgentError:
+            raise
         except AgentsException as error:
+            logger.exception("Stylist agent SDK failure")
+            raise StylistAgentError("Stylist agent run failed") from error
+        except Exception as error:
+            logger.exception("Unexpected stylist agent failure")
             raise StylistAgentError("Stylist agent run failed") from error
         finally:
             await client.close()
-
-        response = result.final_output
-        if not isinstance(response, StylistResponse):
-            raise StylistAgentError("Stylist returned an invalid response")
-        return StylistRunOutcome(
-            response=response,
-            tool_names=hooks.tool_names,
-            validated_item_ids=hooks.validated_item_ids,
-        )

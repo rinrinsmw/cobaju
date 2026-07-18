@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiRequest, getToken } from '../api'
 import type { Page } from '../data'
 
 interface Props { onNavigate: (page: Page, prefill?: string) => void }
@@ -36,22 +37,14 @@ export default function History({ onNavigate }: Props) {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    const token = window.localStorage.getItem('access_token')
-    if (!token) {
+    if (!getToken()) {
       setMessage('Log in to see your saved recommendations.')
       setLoading(false)
       return
     }
 
     const controller = new AbortController()
-    fetch('/api/recommendations', {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then(async response => {
-        if (!response.ok) throw new Error(response.status === 401 ? 'Your session has expired. Please log in again.' : 'History could not be loaded.')
-        return response.json() as Promise<RecommendationHistory[]>
-      })
+    apiRequest<RecommendationHistory[]>('/recommendations', { signal: controller.signal })
       .then(setLooks)
       .catch(error => {
         if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message)

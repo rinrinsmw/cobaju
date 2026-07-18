@@ -342,10 +342,12 @@ Phase 12 connects the approved React interface through the Vite `/api` proxy.
 Register or sign in from the frontend, then use Wardrobe, Add piece, Stylist,
 and Lookbook without manually copying a token. The token remains in the browser
 local storage key `access_token` and is validated with `/auth/me` when the app
-opens. Upload creates the pending record and stores the image in one request,
-then queues analysis, polls status, and presents generated metadata for review
-and confirmation. TanStack Query manages server data, cache invalidation,
-loading states, and error states.
+opens. If a protected request reports an expired session, the frontend clears
+the token, authenticated state, and protected query cache before returning to
+the login screen. Upload creates the pending record and stores the image in one
+request, then queues analysis, polls status, and presents generated metadata
+for review and confirmation. TanStack Query manages server data, cache
+invalidation, loading states, and error states.
 
 The applications can also be started with their native package managers:
 
@@ -365,6 +367,7 @@ uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 
 ```bash
 moon run frontend:build
+moon run frontend:test
 moon run backend:migrate
 moon run backend:test
 moon run :check
@@ -394,8 +397,7 @@ Run only the Phase 11 history tests:
 uv run --project apps/backend pytest apps/backend/tests/test_recommendation_history.py
 ```
 
-The project-wide `:check` target runs the frontend production build and backend
-test suite. Tests use mocked vision and deterministic embedding providers, so
-they require no running Redis server, OpenRouter credits, or Langfuse
-connection. Full frontend API and authentication integration remains Phase 12;
-Phase 11 connects only the approved Lookbook history screen.
+The project-wide `:check` target runs the frontend production build, frontend
+tests, and backend test suite. Tests use mocked vision and deterministic
+embedding providers, so they require no running Redis server, OpenRouter
+credits, or Langfuse connection.

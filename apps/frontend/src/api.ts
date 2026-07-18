@@ -32,14 +32,31 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+export const SESSION_EXPIRED_EVENT = 'cobaju:session-expired'
+export const SESSION_EXPIRED_MESSAGE = 'Your session expired. Please sign in again.'
+
+const authenticationPaths = new Set(['/auth/login', '/auth/register'])
+
 export function getToken() { return window.localStorage.getItem('access_token') }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers)
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   const response = await fetch(`/api${path}`, { ...options, headers })
+
+  if (response.status === 401 && token && !authenticationPaths.has(path)) {
+    window.localStorage.removeItem('access_token')
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+    throw new ApiError(response.status, SESSION_EXPIRED_MESSAGE)
+  }
+
+  return response
+}
+
+export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await apiFetch(path, options)
   if (!response.ok) {
     let message = 'Something went wrong. Please try again.'
     try {
@@ -54,8 +71,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 }
 
 export async function fetchItemImage(itemId: number): Promise<string | null> {
-  const token = getToken()
-  if (!token) return null
-  const response = await fetch(`/api/wardrobe/items/${itemId}/image`, { headers: { Authorization: `Bearer ${token}` } })
+  if (!getToken()) return null
+  const response = await apiFetch(`/wardrobe/items/${itemId}/image`)
   return response.ok ? URL.createObjectURL(await response.blob()) : null
 }

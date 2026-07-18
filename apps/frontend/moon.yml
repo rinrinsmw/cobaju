@@ -23,7 +23,19 @@ tasks:
     outputs:
       - "dist"
 
+  test:
+    command: "corepack pnpm@10.12.1 test"
+    env:
+      COREPACK_HOME: "../../.corepack"
+    inputs:
+      - "src/**/*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+
   check:
     deps:
       - "build"
+      - "test"
     command: "noop"

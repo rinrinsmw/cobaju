@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type FormEvent } from 'react'
 import { useAuth } from '../auth'
 
 export default function AuthScreen() {
-  const { login, register } = useAuth()
+  const { login, register, sessionMessage } = useAuth()
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -21,6 +21,7 @@ export default function AuthScreen() {
       <p style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, fontWeight: 700, marginBottom: 6 }}>Cobaju</p>
       <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 36, lineHeight: 1.1, marginBottom: 12 }}>{mode === 'login' ? 'Welcome back.' : 'Build your wardrobe.'}</h1>
       <p style={{ color: '#6b6055', fontSize: 14, marginBottom: 28 }}>{mode === 'login' ? 'Sign in to open your private wardrobe.' : 'Create an account to save your first piece.'}</p>
+      {sessionMessage && <p role="alert" style={{ color: '#9f3a32', fontSize: 13, marginBottom: 18 }}>{sessionMessage}</p>}
       <form onSubmit={submit} style={{ display: 'grid', gap: 15 }}>
         <label style={{ fontSize: 12, color: '#6b6055' }}>Email<input style={inputStyle} type="email" required value={email} onChange={event => setEmail(event.target.value)} /></label>
         <label style={{ fontSize: 12, color: '#6b6055' }}>Password<input style={inputStyle} type="password" required minLength={8} value={password} onChange={event => setPassword(event.target.value)} /></label>
