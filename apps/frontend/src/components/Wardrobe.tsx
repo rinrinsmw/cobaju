@@ -9,9 +9,21 @@ const emoji: Record<string, string> = { top: '👔', bottom: '👖', dress: '�
 
 function ItemPhoto({ item }: { item: ClothingItem }) {
   const { data } = useQuery({ queryKey: ['item-image', item.id], queryFn: () => fetchItemImage(item.id), enabled: Boolean(item.original_image_path), staleTime: Infinity })
-  useEffect(() => () => { if (data) URL.revokeObjectURL(data) }, [data])
-  return data
-    ? <img src={data} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+  const [imageUrl, setImageUrl] = useState('')
+
+  useEffect(() => {
+    if (!data) {
+      setImageUrl('')
+      return
+    }
+
+    const objectUrl = URL.createObjectURL(data)
+    setImageUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [data])
+
+  return imageUrl
+    ? <img src={imageUrl} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
     : <div style={{ height: '100%', display: 'grid', placeItems: 'center', fontSize: 48 }}>{emoji[item.category] ?? '✦'}</div>
 }
 

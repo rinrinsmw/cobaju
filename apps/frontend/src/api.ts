@@ -70,8 +70,8 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   return response.json() as Promise<T>
 }
 
-export async function fetchItemImage(itemId: number): Promise<string | null> {
+export async function fetchItemImage(itemId: number): Promise<Blob | null> {
   if (!getToken()) return null
   const response = await apiFetch(`/wardrobe/items/${itemId}/image`)
-  return response.ok ? URL.createObjectURL(await response.blob()) : null
+  return response.ok ? response.blob() : null
 }
