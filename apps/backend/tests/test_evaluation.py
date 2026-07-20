@@ -1,4 +1,7 @@
-"""Phase 10 evaluator, hallucination validation, and retry tests."""
+"""Phase 10 evaluator, hallucination validation, and repair tests."""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import anyio
 import pytest
@@ -16,13 +19,19 @@ from app.schemas.chat import (
     RequiredCategory,
     StylistResponse,
 )
-from app.services.chat import create_stylist_response
+from app.schemas.mcp import (
+    GetStylingCandidatesOutput,
+    SaveRecommendationOutput,
+    StylingCandidateGroup,
+    ToolClothingItem,
+)
+from app.services.chat import _grounding_violations, create_stylist_response
 from app.services.outfit_evaluator import (
     RecommendationValidationError,
     get_owned_item_evidence,
     validate_recommendation,
 )
-from app.services.stylist_agent import StylistRunOutcome
+from app.services.stylist_agent import StylistLifecycleMetrics, StylistRunOutcome
 
 
 class AllowedClassifier:
@@ -34,16 +43,50 @@ class SequencedRunner:
     def __init__(self, outcomes: list[StylistRunOutcome]) -> None:
         self.outcomes = outcomes
         self.feedback: list[str | None] = []
+        self.run_calls = 0
+        self.save_calls = 0
+        self.session_count = 0
+        self.metrics = StylistLifecycleMetrics(candidate_count=1, tool_call_count=1)
+
+    @asynccontextmanager
+    async def open_request(self, current_user: User) -> AsyncIterator["SequencedRunner"]:
+        del current_user
+        self.session_count += 1
+        yield self
 
     async def run(
         self,
         message: str,
-        current_user: User,
-        feedback: str | None = None,
     ) -> StylistRunOutcome:
-        del message, current_user
-        self.feedback.append(feedback)
-        return self.outcomes[len(self.feedback) - 1]
+        del message
+        self.run_calls += 1
+        self.feedback.append(None)
+        return self.outcomes[0]
+
+    async def repair(
+        self,
+        message: str,
+        candidate: StylistResponse,
+        violations: list[str],
+    ) -> StylistResponse:
+        del message, candidate
+        self.feedback.append(" ".join(violations))
+        self.metrics.cache_reused_during_repair = True
+        return self.outcomes[1].response
+
+    async def save_recommendation(
+        self, message: str, response: StylistResponse, evaluation_score: float
+    ) -> SaveRecommendationOutput:
+        del evaluation_score
+        self.save_calls += 1
+        self.metrics.tool_call_count += 1
+        available = {item.item_id: item for item in self.outcomes[0].available_items}
+        return SaveRecommendationOutput(
+            user_request=message,
+            items=[available[item.item_id] for item in response.owned_items],
+            explanation=response.message,
+            recommendation_id=1,
+        )
 
 
 class SequencedEvaluator:
@@ -63,7 +106,12 @@ class SequencedEvaluator:
         return evaluation
 
 
-def evaluation(*, accepted: bool, feedback: str = "Looks good.") -> OutfitEvaluation:
+def evaluation(
+    *,
+    accepted: bool,
+    feedback: str = "Looks good.",
+    unsupported_claims: list[str] | None = None,
+) -> OutfitEvaluation:
     return OutfitEvaluation(
         accepted=accepted,
         occasion_appropriate=accepted,
@@ -72,6 +120,7 @@ def evaluation(*, accepted: bool, feedback: str = "Looks good.") -> OutfitEvalua
         styles_compatible=accepted,
         evaluation_score=10 if accepted else 4,
         feedback=feedback,
+        unsupported_claims=unsupported_claims or [],
     )
 
 
@@ -110,8 +159,18 @@ def candidate(
 def outcome(response: StylistResponse) -> StylistRunOutcome:
     return StylistRunOutcome(
         response=response,
-        tool_names=["search_wardrobe", "save_recommendation"],
-        validated_item_ids={item.item_id for item in response.owned_items},
+        tool_names=["get_styling_candidates"],
+        validated_item_ids=set(),
+        available_items=[
+            ToolClothingItem(
+                item_id=10,
+                name="Blue shirt",
+                category=ClothingCategory.TOP,
+                color="blue",
+                description=None,
+            )
+        ],
+        tool_invocation_counts={"get_styling_candidates": 1},
     )
 
 
@@ -179,14 +238,48 @@ def test_unsupported_category_and_unlabelled_generic_advice_are_blocked(
     assert any("must start with 'Not owned:'" in issue for issue in result.violations)
 
 
-def test_evaluator_rejection_triggers_one_successful_retry(
+def test_cached_anchor_item_is_an_objective_blocking_requirement() -> None:
+    response = candidate(10)
+    run_outcome = outcome(response)
+    anchor = ToolClothingItem(
+        item_id=11,
+        name="Black blazer",
+        category=ClothingCategory.OUTERWEAR,
+        color="black",
+        description=None,
+    )
+    run_outcome.available_items.append(anchor)
+    run_outcome.candidate_bundle = GetStylingCandidatesOutput(
+        anchor_item=anchor,
+        owned_item_ids=[10, 11],
+        candidates_by_category=[
+            StylingCandidateGroup(
+                category=ClothingCategory.TOP,
+                items=[run_outcome.available_items[0]],
+            ),
+            StylingCandidateGroup(
+                category=ClothingCategory.OUTERWEAR,
+                items=[anchor],
+            ),
+        ],
+        missing_required_categories=[],
+    )
+
+    assert _grounding_violations(run_outcome) == ["ANCHOR_ITEM_MISSING: 11."]
+
+
+def test_verified_unsupported_claim_triggers_one_successful_targeted_repair(
     evaluation_session: Session,
 ) -> None:
     response = candidate(10, missing_guidance="Not owned: add neutral trousers.")
     runner = SequencedRunner([outcome(response), outcome(response)])
     evaluator = SequencedEvaluator(
         [
-            evaluation(accepted=False, feedback="Improve outfit completeness."),
+            evaluation(
+                accepted=False,
+                feedback="Remove the unsupported fabric claim.",
+                unsupported_claims=["The shirt is wrinkle-proof."],
+            ),
             evaluation(accepted=True),
         ]
     )
@@ -211,15 +304,63 @@ def test_evaluator_rejection_triggers_one_successful_retry(
 
     assert result == response
     assert evaluator.calls == 2
+    assert runner.run_calls == 1
     assert runner.feedback[0] is None
-    assert "Evaluator rejected outfit completeness" in (runner.feedback[1] or "")
+    assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
 
 
-def test_stylist_retries_no_more_than_once(evaluation_session: Session) -> None:
+def test_deterministic_rejection_repairs_before_calling_evaluator(
+    evaluation_session: Session,
+) -> None:
+    initial = candidate(10)
+    initial.required_categories.append(
+        RequiredCategory(
+            category=ClothingCategory.BOTTOM,
+            reason="A complete office outfit needs a bottom.",
+        )
+    )
+    repaired = candidate(10, missing_guidance="Not owned: add neutral trousers.")
+    repaired.required_categories.append(
+        RequiredCategory(
+            category=ClothingCategory.BOTTOM,
+            reason="A complete office outfit needs a bottom.",
+        )
+    )
+    runner = SequencedRunner([outcome(initial), outcome(repaired)])
+    evaluator = SequencedEvaluator([evaluation(accepted=True)])
+
+    async def run() -> StylistResponse:
+        return await create_stylist_response(
+            message="Dress me for the office",
+            current_user=User(
+                id=1, email="owner@example.com", hashed_password="hash"
+            ),
+            classifier=AllowedClassifier(),
+            runner=runner,
+            evaluator=evaluator,
+            session=evaluation_session,
+            settings=Settings(
+                openrouter_stylist_model="stylist-model",
+                openrouter_evaluator_model="evaluator-model",
+            ),
+        )
+
+    result = anyio.run(run)
+
+    assert result == repaired
+    assert runner.run_calls == 1
+    assert evaluator.calls == 1
+    assert "must have an owned item" in (runner.feedback[1] or "")
+
+
+def test_stylist_repairs_no_more_than_once(evaluation_session: Session) -> None:
     response = candidate(10)
     runner = SequencedRunner([outcome(response), outcome(response)])
     evaluator = SequencedEvaluator(
-        [evaluation(accepted=False), evaluation(accepted=False)]
+        [
+            evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
+            evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
+        ]
     )
 
     async def run() -> None:
@@ -242,4 +383,7 @@ def test_stylist_retries_no_more_than_once(evaluation_session: Session) -> None:
         anyio.run(run)
 
     assert evaluator.calls == 2
+    assert runner.run_calls == 1
     assert len(runner.feedback) == 2
+    assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
+    assert runner.save_calls == 0

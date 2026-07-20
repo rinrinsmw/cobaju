@@ -68,9 +68,22 @@ def test_agent_temperatures_and_limits_have_safe_defaults() -> None:
 
     assert settings.chat_guardrail_temperature == 0.0
     assert settings.stylist_temperature == 0.5
+    assert settings.stylist_repair_temperature == 0.1
     assert settings.evaluator_temperature == 0.0
     assert settings.stylist_max_turns == 8
     assert settings.stylist_max_tool_calls == 8
+    assert settings.chat_guardrail_prompt_version == "chat-guardrail-v1"
+    assert settings.stylist_prompt_version == "stylist-v2"
+    assert settings.stylist_repair_prompt_version == "stylist-repair-v1"
+    assert settings.evaluator_prompt_version == "outfit-evaluator-v1"
+
+
+def test_langfuse_host_environment_name_is_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.example.com")
+
+    assert Settings().langfuse_base_url == "https://langfuse.example.com"
 
 
 @pytest.mark.parametrize(

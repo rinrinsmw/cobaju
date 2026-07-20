@@ -5,13 +5,17 @@ from collections import Counter
 from sqlmodel import Session
 
 from app.models.clothing_item import ClothingCategory, ClothingItem, ProcessingStatus
+from app.models.recommendation import Recommendation
 from app.schemas.mcp import (
+    GetStylingCandidatesInput,
+    GetStylingCandidatesOutput,
     ListWardrobeCategoriesOutput,
     SaveRecommendationInput,
     SaveRecommendationOutput,
     SearchWardrobeOutput,
     ToolClothingItem,
     ToolSearchMatch,
+    StylingCandidateGroup,
     WardrobeCategorySummary,
 )
 from app.services.vector_store import WardrobeVectorStore
@@ -110,6 +114,62 @@ class WardrobeToolService:
             raise ClothingItemNotFoundError
         return _tool_item(item)
 
+    def get_styling_candidates(
+        self,
+        request: GetStylingCandidatesInput,
+    ) -> GetStylingCandidatesOutput:
+        """Return one capped, ownership-safe evidence bundle for a stylist run.
+
+        This intentionally performs one database read and groups the result in
+        the normal, stable category enum. The caller therefore does not need to
+        list tools, list categories, or issue one search per outfit component.
+        """
+
+        confirmed_items = list_confirmed_clothing_items(self.session, self.user_id)
+        confirmed_by_id = {
+            item.id: item for item in confirmed_items if item.id is not None
+        }
+
+        anchor = None
+        if request.anchor_item_id is not None:
+            anchor_model = confirmed_by_id.get(request.anchor_item_id)
+            if anchor_model is None:
+                raise RecommendationItemNotFoundError
+            anchor = _tool_item(anchor_model)
+
+        grouped: list[StylingCandidateGroup] = []
+        populated_categories: set[ClothingCategory] = set()
+        for category in ClothingCategory:
+            category_models = [
+                item
+                for item in confirmed_items
+                if item.category == category
+            ]
+            if anchor is not None and anchor.category == category:
+                category_models.sort(
+                    key=lambda item: 0 if item.id == anchor.item_id else 1
+                )
+            category_items = [
+                _tool_item(item)
+                for item in category_models[: request.limit_per_category]
+            ]
+            if category_items:
+                populated_categories.add(category)
+                grouped.append(
+                    StylingCandidateGroup(category=category, items=category_items)
+                )
+
+        return GetStylingCandidatesOutput(
+            anchor_item=anchor,
+            owned_item_ids=sorted(confirmed_by_id),
+            candidates_by_category=grouped,
+            missing_required_categories=[
+                category
+                for category in request.required_categories
+                if category not in populated_categories
+            ],
+        )
+
     def list_wardrobe_categories(self) -> ListWardrobeCategoriesOutput:
         """Count the trusted user's confirmed items by populated category."""
 
@@ -126,7 +186,7 @@ class WardrobeToolService:
         self,
         recommendation: SaveRecommendationInput,
     ) -> SaveRecommendationOutput:
-        """Validate a candidate; the chat service saves it only after evaluation."""
+        """Recheck ownership and persist one already-evaluated recommendation."""
 
         items: list[ToolClothingItem] = []
         try:
@@ -137,8 +197,22 @@ class WardrobeToolService:
             # failed, or belongs to another user.
             raise RecommendationItemNotFoundError from error
 
+        record = Recommendation(
+            user_id=self.user_id,
+            original_request=recommendation.user_request,
+            selected_item_ids=[item.item_id for item in items],
+            explanation=recommendation.explanation,
+            evaluation_score=recommendation.evaluation_score,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        if record.id is None:
+            raise RuntimeError("Persisted recommendation has no ID")
+
         return SaveRecommendationOutput(
             user_request=recommendation.user_request,
             items=items,
             explanation=recommendation.explanation,
+            recommendation_id=record.id,
         )

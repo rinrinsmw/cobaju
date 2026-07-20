@@ -14,7 +14,8 @@ categories, calls those MCP tools, and separates validated owned IDs from generi
 missing-category advice.
 Every candidate now passes through a separate temperature-zero evaluator and a
 database-backed deterministic validator. A rejected candidate receives at most
-one stylist retry; a second failure is never returned to the user.
+one targeted, tool-free repair using the first run's wardrobe evidence; the MCP
+workflow is never rerun, and a second failure is never returned to the user.
 Accepted recommendations are saved with their evaluator score and exposed
 through an ownership-scoped history API used by the approved Lookbook screen.
 
@@ -274,6 +275,7 @@ when telemetry is enabled.
 Phase 8 adds one local MCP server with these tools:
 
 ```text
+get_styling_candidates
 search_wardrobe
 get_clothing_item
 list_wardrobe_categories
@@ -291,9 +293,11 @@ argument, or shared `.env`. Startup fails if the identity is missing, malformed,
 or does not identify an existing SQLite user. One stdio process and client
 session belong to exactly one authenticated user.
 
-`save_recommendation` validates that every selected ID is unique, confirmed,
-and owned by the trusted user. It remains a pre-evaluation check and returns
-`persisted: false`; the chat service saves only the final accepted candidate.
+Normal Stylist requests make one `get_styling_candidates` call. It returns an
+optional anchor, owned IDs, candidates capped per category, and missing required
+categories. `save_recommendation` is called only after final validation; it
+rechecks ownership, persists the accepted recommendation, and returns
+`persisted: true`.
 
 Semantic search requires `OPENROUTER_API_KEY` and
 `OPENROUTER_EMBEDDING_MODEL`. The other three MCP tools remain usable without
@@ -314,12 +318,18 @@ curl -X POST http://127.0.0.1:8000/chat/recommendations \
 ```
 
 The endpoint rejects explicit prompt injection before an AI call, redirects
-unrelated requests, caps turns and tool calls, and exposes owned items only when
-the MCP server accepted the same IDs. Missing categories are clearly non-owned.
-Before a response is returned, the evaluator checks occasion, completeness,
-color, style, and unsupported claims at temperature `0.0`. The deterministic
-validator then rechecks confirmed ownership directly from SQLite, category
-claims, and the `Not owned:` label. Rejected candidates are retried once only.
+unrelated requests, and opens exactly one MCP session. Generation receives the
+cached candidate bundle and makes no tool calls. Missing categories are clearly
+non-owned. Before persistence, deterministic validation rechecks cached owned
+evidence, category claims, required-category coverage,
+and the `Not owned:` label. Candidates that pass those checks reach the
+temperature-`0.0` evaluator for occasion, completeness, color, style, and
+unsupported claims. Objective failures (missing required outfit components or
+unsupported factual claims) get one targeted repair using exact failure codes
+and already retrieved wardrobe candidates. Subjective occasion, color, style,
+and overall quality judgments are Langfuse scores, not HTTP blockers. Repair
+reuses the same session cache and never lists tools, retrieves, or calls
+`save_recommendation`. Persistence occurs only after all blocking checks pass.
 
 ## Recommendation history
 
@@ -363,6 +373,20 @@ The native Alembic equivalent of the Moon migration command is:
 uv run --project apps/backend alembic -c apps/backend/alembic.ini upgrade head
 ```
 
+## AI observability
+
+Phase 13 traces each stylist request from authentication through guardrail,
+prompt construction, MCP tools, database retrieval, generation, evaluation,
+validation, persistence, and response formatting. Structured JSON request logs
+share the Langfuse trace ID and a safe request ID. See
+[`docs/Observability.md`](docs/Observability.md) for the trace hierarchy,
+configuration, evaluation metrics, privacy boundaries, and validation steps.
+
+Langfuse remains optional. Set `LANGFUSE_ENABLED=true` with
+`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` to export
+traces. Disabled or incomplete configuration uses a no-op backend and does not
+interrupt AI workflows.
+
 ## Build and test
 
 ```bash
@@ -385,7 +409,7 @@ Run only the Phase 9 chat tests:
 uv run --project apps/backend pytest apps/backend/tests/test_chat.py
 ```
 
-Run only the Phase 10 evaluation and retry tests:
+Run only the Phase 10 evaluation and repair tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py

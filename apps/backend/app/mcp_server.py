@@ -15,6 +15,8 @@ from app.database import engine
 from app.models.clothing_item import ClothingCategory
 from app.models.user import User
 from app.schemas.mcp import (
+    GetStylingCandidatesInput,
+    GetStylingCandidatesOutput,
     ListWardrobeCategoriesOutput,
     SaveRecommendationInput,
     SaveRecommendationOutput,
@@ -84,6 +86,30 @@ def _service(ctx: Context[ServerSession, WardrobeMcpContext]) -> WardrobeToolSer
 
 
 @mcp.tool(structured_output=True)
+def get_styling_candidates(
+    user_request: str,
+    required_categories: list[ClothingCategory],
+    ctx: Context[ServerSession, WardrobeMcpContext],
+    anchor_item_id: int | None = None,
+    limit_per_category: int = 3,
+) -> GetStylingCandidatesOutput:
+    """Get one compact, grouped wardrobe evidence bundle for a stylist request."""
+
+    try:
+        request = GetStylingCandidatesInput(
+            user_request=user_request,
+            required_categories=required_categories,
+            anchor_item_id=anchor_item_id,
+            limit_per_category=limit_per_category,
+        )
+        return _service(ctx).get_styling_candidates(request)
+    except ValueError as error:
+        raise ToolError("Styling candidate input is invalid") from error
+    except RecommendationItemNotFoundError as error:
+        raise ToolError("Requested anchor item is unavailable") from error
+
+
+@mcp.tool(structured_output=True)
 def search_wardrobe(
     query: str,
     ctx: Context[ServerSession, WardrobeMcpContext],
@@ -127,15 +153,17 @@ def save_recommendation(
     user_request: str,
     item_ids: list[int],
     explanation: str,
+    evaluation_score: float,
     ctx: Context[ServerSession, WardrobeMcpContext],
 ) -> SaveRecommendationOutput:
-    """Accept a recommendation only when every item is confirmed and owned by the user."""
+    """Persist a validated recommendation after rechecking every owned item ID."""
 
     try:
         recommendation = SaveRecommendationInput(
             user_request=user_request,
             item_ids=item_ids,
             explanation=explanation,
+            evaluation_score=evaluation_score,
         )
         return _service(ctx).save_recommendation(recommendation)
     except ValueError as error:

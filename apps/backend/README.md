@@ -32,7 +32,7 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - semantic search with mandatory user and optional category filters;
 - optional Langfuse wardrobe-retrieval spans;
 - normal ownership-safe Python services for stylist-facing wardrobe operations;
-- a standalone FastMCP server with four structured wardrobe tools;
+- a standalone FastMCP server with a high-level styling-candidate tool;
 - trusted host-supplied MCP user context that is absent from model inputs;
 - confirmed ownership validation for recommendation candidates;
 - pytest coverage for settings, sessions, health, authentication, CRUD,
@@ -42,8 +42,8 @@ This FastAPI service contains Cobaju's backend through Phase 11:
   cross-user recommendation rejection;
 - one authenticated OpenAI Agents SDK Wardrobe Stylist Agent;
 - deterministic prompt-injection rejection and a temperature-0.0 chat classifier;
-- required-category planning and bounded MCP wardrobe tool use;
-- owned item IDs grounded through `save_recommendation`;
+- one capped `get_styling_candidates` retrieval per Stylist request;
+- owned item IDs grounded through cached MCP evidence;
 - clearly separated incomplete-wardrobe guidance;
 - one structured chat response and optional Langfuse recommendation traces;
 - mocked chat, grounding, limit, incomplete-wardrobe, and API tests.
@@ -51,8 +51,9 @@ This FastAPI service contains Cobaju's backend through Phase 11:
   color, style, and unsupported-claim checks;
 - database-backed final ID, ownership, category, and missing-item label checks;
 - hallucination outcomes in optional Langfuse validation observations;
-- exactly one retry after evaluator or deterministic rejection;
-- mocked evaluation, cross-user, invalid-ID, unsupported-claim, and retry tests.
+- exactly one tool-free repair after deterministic rejection or a verified
+  unsupported claim;
+- mocked evaluation, cross-user, invalid-ID, unsupported-claim, and repair tests.
 - a recommendation table populated only after final evaluation succeeds;
 - an authenticated, newest-first `GET /recommendations` history endpoint;
 - safe unavailable-item output when historically selected clothing is deleted;
@@ -60,9 +61,11 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 
 ## Recommendation history
 
-The chat service writes history only after both evaluation layers accept the
-final candidate. The MCP `save_recommendation` tool remains a pre-evaluation
-ownership validator and therefore still returns `persisted: false`.
+The chat service calls MCP `save_recommendation` only after deterministic
+validation accepts the final candidate. A verified unsupported prose claim may
+also block because Python does not inspect prose semantics. Evaluator quality
+judgments otherwise remain nonblocking observability metadata. The MCP tool
+rechecks ownership, writes the history record, and returns `persisted: true`.
 
 ```bash
 curl http://127.0.0.1:8000/recommendations \
@@ -83,13 +86,21 @@ Configure `OPENROUTER_EVALUATOR_MODEL` for strict structured output. The
 classifier and evaluator run at temperature `0.0`; the stylist runs at `0.5`.
 
 Explicit prompt injection is rejected before a paid call. Allowed requests run
-one stylist against the trusted current user's MCP process. Owned selections are
-returned only when `save_recommendation` validated the same IDs. Unavailable
-categories are returned separately as generic, non-owned guidance.
-Each candidate is compared with confirmed database evidence by the evaluator,
-then deterministic code rechecks item IDs, ownership, categories, and explicit
-`Not owned:` labels. A rejection is sent back to the stylist once. If the retry
-also fails, the endpoint returns its existing generic HTTP 503 response.
+one request-scoped session against the trusted current user's MCP process. One
+`get_styling_candidates` call returns the optional anchor, all owned IDs, capped
+candidate groups, and missing required categories. Unavailable categories are
+returned separately as generic, non-owned guidance. Deterministic code first
+rechecks item IDs against that cached evidence, categories,
+required-category coverage, and explicit `Not owned:` labels. Candidates that
+fail are sent once to a tool-free repair model together with the original
+structured response, violations, and wardrobe candidates retained from MCP
+tool results. The repair does not reopen MCP, list tools, retrieve again, or
+save. Once deterministic validation passes, evaluator quality scores and
+warnings are recorded without allowing `accepted=false` or `complete=false` to
+block persistence or HTTP 200. A verified unsupported claim may use the same
+single repair. If the final candidate still has an objective failure, the
+endpoint returns its existing generic HTTP 503 response and nothing is
+persisted.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \
@@ -98,15 +109,18 @@ curl -X POST http://127.0.0.1:8000/chat/recommendations \
   -d '{"message":"Build a smart-casual office outfit from my wardrobe"}'
 ```
 
-`STYLIST_MAX_TURNS` and `STYLIST_MAX_TOOL_CALLS` bound the run. The SDK's
+`STYLIST_MAX_TOOL_CALLS` bounds the two expected MCP calls and
+`STYLING_CANDIDATES_PER_CATEGORY` caps each returned group.
+`STYLIST_REPAIR_TEMPERATURE` controls the single repair call. The SDK's
 default OpenAI trace exporter is disabled. When `LANGFUSE_ENABLED=true`, Cobaju
 creates an `outfit_recommendation` trace without the message body or secrets.
 
 ## Wardrobe MCP server
 
-Phase 8 exposes the tested service layer through exactly four tools:
+The server exposes these structured tools:
 
 ```text
+get_styling_candidates
 search_wardrobe
 get_clothing_item
 list_wardrobe_categories
@@ -128,9 +142,10 @@ stdio streams, and child process, including when the caller raises an exception.
 server can still list categories, get confirmed items, and validate a
 recommendation when semantic retrieval is not configured.
 
-`save_recommendation` rejects missing, unconfirmed, cross-user, duplicate, or
-invalid IDs. It returns the validated owned item records and `persisted: false`;
-the final chat workflow performs durable saving after evaluation succeeds.
+Normal Stylist requests use only `get_styling_candidates` and, after final
+validation, `save_recommendation`. They do not list tools or call the lower-level
+search/category tools. `save_recommendation` rejects missing, unconfirmed,
+cross-user, duplicate, or invalid IDs before durably saving the accepted result.
 
 ## Wardrobe endpoints
 
@@ -190,6 +205,11 @@ For real calls, set `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`, and
 input and strict structured outputs. Langfuse tracing is disabled by default;
 enable it with `LANGFUSE_ENABLED=true` and the standard Langfuse key and host
 variables. Image bytes and secrets are not included in trace inputs.
+
+Phase 13 routes all tracing through the shared provider-neutral observability
+facade. The full stylist hierarchy, structured logging fields, prompt versions,
+quality metrics, and Langfuse validation workflow are documented in
+[`../../docs/Observability.md`](../../docs/Observability.md).
 
 Set `OPENROUTER_EMBEDDING_MODEL` to a text embedding model available through
 OpenRouter. Confirmed records are stored in `CHROMA_DIRECTORY` under

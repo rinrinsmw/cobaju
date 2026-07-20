@@ -1,6 +1,9 @@
 """Phase 8 normal wardrobe service and thin MCP tool tests."""
 
+import asyncio
+import traceback as traceback_module
 from collections.abc import Generator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import anyio
@@ -11,6 +14,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import mcp_server as mcp_server_module
+from app.services import mcp_client as mcp_client_module
 from app.core.config import Settings
 from app.core.mcp_identity import (
     MCP_RUNTIME_USER_ID_ENV,
@@ -21,6 +25,7 @@ from app.main import app
 from app.mcp_server import (
     WardrobeMcpContext,
     get_clothing_item,
+    get_styling_candidates,
     list_wardrobe_categories,
     mcp,
     save_recommendation,
@@ -32,11 +37,13 @@ from app.models.clothing_item import (
     ProcessingStatus,
 )
 from app.models.user import User
-from app.schemas.mcp import SaveRecommendationInput
+from app.models.recommendation import Recommendation
+from app.schemas.mcp import GetStylingCandidatesInput, SaveRecommendationInput
 from app.services.mcp_client import (
     build_user_scoped_mcp_parameters,
     open_user_scoped_mcp_session,
 )
+from app.services.outfit_evaluator import RecommendationValidationError
 from app.services.vector_store import WardrobeSearchResult
 from app.services.wardrobe import ClothingItemNotFoundError
 from app.services.wardrobe_tools import (
@@ -227,19 +234,25 @@ def test_save_recommendation_validates_candidate_without_persisting_early(
             user_request="  office outfit  ",
             item_ids=[own_item.id or 0],
             explanation="  A simple office option.  ",
+            evaluation_score=9,
         )
     )
 
     assert accepted.status == "accepted"
     assert accepted.user_request == "office outfit"
     assert [item.item_id for item in accepted.items] == [own_item.id]
-    assert accepted.persisted is False
+    assert accepted.persisted is True
+    assert accepted.recommendation_id > 0
+    saved = wardrobe_session.get(Recommendation, accepted.recommendation_id)
+    assert saved is not None
+    assert saved.selected_item_ids == [own_item.id]
     with pytest.raises(RecommendationItemNotFoundError):
         service.save_recommendation(
             SaveRecommendationInput(
                 user_request="office outfit",
                 item_ids=[own_item.id or 0, foreign_item.id or 0],
                 explanation="Must be rejected.",
+                evaluation_score=1,
             )
         )
     with pytest.raises(ValueError, match="unique"):
@@ -247,6 +260,7 @@ def test_save_recommendation_validates_candidate_without_persisting_early(
             user_request="office outfit",
             item_ids=[own_item.id or 0, own_item.id or 0],
             explanation="Duplicate item IDs are invalid.",
+            evaluation_score=1,
         )
 
 
@@ -381,10 +395,136 @@ def test_two_user_scoped_stdio_sessions_are_isolated(
     anyio.run(exercise_sessions)
 
 
-def test_mcp_exposes_four_structured_tools_without_user_id_input() -> None:
+def test_mcp_boundary_unwraps_one_domain_error_after_session_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_events: list[str] = []
+
+    @asynccontextmanager
+    async def fake_stdio_client(parameters: object):
+        del parameters
+        try:
+            yield object(), object()
+        finally:
+            cleanup_events.append("stdio")
+
+    class GroupingClientSession:
+        async def __aenter__(self) -> "GroupingClientSession":
+            return self
+
+        async def __aexit__(
+            self,
+            error_type: type[BaseException] | None,
+            error: BaseException | None,
+            traceback: object,
+        ) -> None:
+            del error_type, traceback
+            cleanup_events.append("session")
+            if error is not None:
+                raise ExceptionGroup("MCP session shutdown", [error])
+
+        async def initialize(self) -> None:
+            pass
+
+    monkeypatch.setattr(mcp_client_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(
+        mcp_client_module,
+        "ClientSession",
+        lambda read_stream, write_stream: GroupingClientSession(),
+    )
+
+    async def exercise_boundary() -> None:
+        error = RecommendationValidationError("invalid after repair")
+        with pytest.raises(RecommendationValidationError) as caught:
+            async with open_user_scoped_mcp_session(
+                User(id=1, email="owner@example.com", hashed_password="hash"),
+                Settings(openrouter_api_key=""),
+            ):
+                raise error
+        assert caught.value is error
+        assert isinstance(caught.value.__cause__, ExceptionGroup)
+        formatted = "".join(
+            traceback_module.format_exception(
+                type(caught.value), caught.value, caught.value.__traceback__
+            )
+        )
+        assert "MCP session shutdown" in formatted
+        assert "RecommendationValidationError: invalid after repair" in formatted
+
+    anyio.run(exercise_boundary)
+
+    assert cleanup_events == ["session", "stdio"]
+
+
+@pytest.mark.parametrize(
+    "original_group",
+    [
+        BaseExceptionGroup("cancelled", [asyncio.CancelledError()]),
+        ExceptionGroup(
+            "multiple",
+            [
+                ExceptionGroup(
+                    "domain",
+                    [RecommendationValidationError("invalid after repair")],
+                ),
+                ValueError("cleanup also failed"),
+            ],
+        ),
+    ],
+    ids=["cancellation", "multiple-nested-exceptions"],
+)
+def test_mcp_boundary_preserves_non_unwrappable_exception_groups(
+    monkeypatch: pytest.MonkeyPatch,
+    original_group: BaseExceptionGroup,
+) -> None:
+    @asynccontextmanager
+    async def fake_stdio_client(parameters: object):
+        del parameters
+        yield object(), object()
+
+    class PassthroughClientSession:
+        async def __aenter__(self) -> "PassthroughClientSession":
+            return self
+
+        async def __aexit__(
+            self,
+            error_type: type[BaseException] | None,
+            error: BaseException | None,
+            traceback: object,
+        ) -> bool:
+            del error_type, error, traceback
+            return False
+
+        async def initialize(self) -> None:
+            pass
+
+    monkeypatch.setattr(mcp_client_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(
+        mcp_client_module,
+        "ClientSession",
+        lambda read_stream, write_stream: PassthroughClientSession(),
+    )
+
+    async def exercise_boundary() -> None:
+        try:
+            async with open_user_scoped_mcp_session(
+                User(id=1, email="owner@example.com", hashed_password="hash"),
+                Settings(openrouter_api_key=""),
+            ):
+                raise original_group
+        except BaseExceptionGroup as caught:
+            assert caught is original_group
+        else:
+            pytest.fail("The original exception group was swallowed")
+
+    anyio.run(exercise_boundary)
+
+
+def test_mcp_exposes_high_level_candidate_tool_without_user_id_input() -> None:
     tools = anyio.run(mcp.list_tools)
 
     assert [tool.name for tool in tools] == [
+        "get_styling_candidates",
         "search_wardrobe",
         "get_clothing_item",
         "list_wardrobe_categories",
@@ -393,6 +533,45 @@ def test_mcp_exposes_four_structured_tools_without_user_id_input() -> None:
     assert all(tool.description for tool in tools)
     assert all(tool.outputSchema for tool in tools)
     assert all("user_id" not in tool.inputSchema.get("properties", {}) for tool in tools)
+
+
+def test_styling_candidates_are_grouped_capped_and_report_missing_categories(
+    wardrobe_session: Session,
+) -> None:
+    first_top = add_item(
+        wardrobe_session,
+        user_id=1,
+        name="First top",
+        category=ClothingCategory.TOP,
+    )
+    add_item(
+        wardrobe_session,
+        user_id=1,
+        name="Second top",
+        category=ClothingCategory.TOP,
+    )
+    add_item(
+        wardrobe_session,
+        user_id=1,
+        name="Third top",
+        category=ClothingCategory.TOP,
+    )
+    service = WardrobeToolService(wardrobe_session, user_id=1, vector_store=None)
+
+    result = service.get_styling_candidates(
+        GetStylingCandidatesInput(
+            user_request="Style item 1 for work",
+            required_categories=[ClothingCategory.TOP, ClothingCategory.SHOES],
+            anchor_item_id=first_top.id,
+            limit_per_category=2,
+        )
+    )
+
+    assert result.anchor_item is not None
+    assert result.anchor_item.item_id == first_top.id
+    assert len(result.candidates_by_category[0].items) == 2
+    assert result.missing_required_categories == [ClothingCategory.SHOES]
+    assert result.owned_item_ids == sorted(result.owned_item_ids)
 
 
 def test_mcp_wrappers_delegate_and_keep_cross_user_errors_safe(
@@ -417,10 +596,19 @@ def test_mcp_wrappers_delegate_and_keep_cross_user_errors_safe(
     assert search_wardrobe("office", context).matches[0].item_id == own_item.id  # type: ignore[arg-type]
     assert get_clothing_item(own_item.id or 0, context).name == "Office Shirt"  # type: ignore[arg-type]
     assert list_wardrobe_categories(context).categories[0].category == ClothingCategory.TOP  # type: ignore[arg-type]
+    candidates = get_styling_candidates(
+        "office",
+        [ClothingCategory.TOP, ClothingCategory.SHOES],
+        context,  # type: ignore[arg-type]
+        limit_per_category=1,
+    )
+    assert candidates.candidates_by_category[0].items[0].item_id == own_item.id
+    assert candidates.missing_required_categories == [ClothingCategory.SHOES]
     assert save_recommendation(
         "office outfit",
         [own_item.id or 0],
         "Wear the owned shirt.",
+        9,
         context,  # type: ignore[arg-type]
     ).status == "accepted"
 
@@ -431,5 +619,6 @@ def test_mcp_wrappers_delegate_and_keep_cross_user_errors_safe(
             "office outfit",
             [foreign_item.id or 0],
             "Must be rejected.",
+            1,
             context,  # type: ignore[arg-type]
         )

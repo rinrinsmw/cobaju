@@ -6,6 +6,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.dependencies import get_wardrobe_vector_store
+from app.observability import get_observability
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +19,9 @@ def disable_unmocked_embedding_calls(
     monkeypatch.setenv("OPENROUTER_EMBEDDING_MODEL", "")
     monkeypatch.setenv("LANGFUSE_ENABLED", "false")
     get_settings.cache_clear()
+    get_observability.cache_clear()
     get_wardrobe_vector_store.cache_clear()
     yield
     get_settings.cache_clear()
+    get_observability.cache_clear()
     get_wardrobe_vector_store.cache_clear()

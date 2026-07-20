@@ -42,12 +42,67 @@ class ListWardrobeCategoriesOutput(BaseModel):
     categories: list[WardrobeCategorySummary]
 
 
-class SaveRecommendationInput(BaseModel):
-    """Recommendation candidate to validate before final evaluation and saving."""
+class StylingCandidateGroup(BaseModel):
+    """A deliberately small group of owned items in one clothing category."""
+
+    category: ClothingCategory
+    items: list[ToolClothingItem]
+
+
+class GetStylingCandidatesInput(BaseModel):
+    """One high-level wardrobe retrieval request for a stylist run."""
 
     user_request: str = Field(min_length=1, max_length=500)
-    item_ids: list[int] = Field(min_length=1, max_length=15)
-    explanation: str = Field(min_length=1, max_length=1000)
+    required_categories: list[ClothingCategory] = Field(max_length=7)
+    anchor_item_id: int | None = Field(default=None, ge=1)
+    limit_per_category: int = Field(default=3, ge=1, le=5)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("user_request")
+    @classmethod
+    def normalize_user_request(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("required_categories")
+    @classmethod
+    def required_categories_must_be_unique(
+        cls, value: list[ClothingCategory]
+    ) -> list[ClothingCategory]:
+        if len(value) != len(set(value)):
+            raise ValueError("required categories must be unique")
+        return value
+
+
+class GetStylingCandidatesOutput(BaseModel):
+    """Cached wardrobe evidence returned by one MCP retrieval call."""
+
+    anchor_item: ToolClothingItem | None
+    owned_item_ids: list[int]
+    candidates_by_category: list[StylingCandidateGroup]
+    missing_required_categories: list[ClothingCategory]
+
+    @property
+    def candidate_items(self) -> list[ToolClothingItem]:
+        """Flatten the compact groups for validation and repair prompts."""
+
+        return [
+            item
+            for group in self.candidates_by_category
+            for item in group.items
+        ]
+
+
+class SaveRecommendationInput(BaseModel):
+    """A fully validated recommendation ready for MCP persistence."""
+
+    user_request: str = Field(min_length=1, max_length=500)
+    item_ids: list[int] = Field(max_length=15)
+    explanation: str = Field(min_length=1, max_length=1200)
+    evaluation_score: float = Field(ge=0, le=10)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -70,10 +125,11 @@ class SaveRecommendationInput(BaseModel):
 
 
 class SaveRecommendationOutput(BaseModel):
-    """A pre-evaluation recommendation accepted by the tool layer."""
+    """A final recommendation persisted through the MCP boundary."""
 
     status: Literal["accepted"] = "accepted"
     user_request: str
     items: list[ToolClothingItem]
     explanation: str
-    persisted: Literal[False] = False
+    recommendation_id: int = Field(ge=1)
+    persisted: Literal[True] = True

@@ -7,6 +7,7 @@ import {
   SESSION_EXPIRED_MESSAGE,
   type User,
 } from './api'
+import { clearStylistSession } from './stylistSession'
 
 interface AuthValue {
   user: User | null
@@ -27,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleSessionExpired = () => {
+      if (user) clearStylistSession(user.id)
       setUser(null)
       setChecking(false)
       setSessionMessage(SESSION_EXPIRED_MESSAGE)
@@ -35,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
-  }, [queryClient])
+  }, [queryClient, user])
 
   useEffect(() => {
     if (!getToken()) return
@@ -53,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await login(email, password)
   }
   const logout = () => {
+    if (user) clearStylistSession(user.id)
     window.localStorage.removeItem('access_token')
     setUser(null)
     setSessionMessage('')

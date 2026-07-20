@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Cobaju API"
     app_version: str = "0.1.0"
+    app_environment: str = "development"
     backend_host: str = "127.0.0.1"
     backend_port: int = 8000
     database_url: str = "sqlite:///./cobaju.db"
@@ -36,24 +37,34 @@ class Settings(BaseSettings):
     vision_temperature: float = 0.1
     chat_guardrail_temperature: float = 0.0
     stylist_temperature: float = 0.5
+    stylist_repair_temperature: float = 0.1
     evaluator_temperature: float = 0.0
     stylist_max_turns: int = Field(default=8, ge=1, le=20)
     stylist_max_tool_calls: int = Field(default=8, ge=1, le=30)
+    chat_guardrail_prompt_version: str = "chat-guardrail-v1"
+    stylist_prompt_version: str = "stylist-v2"
+    stylist_repair_prompt_version: str = "stylist-repair-v1"
+    evaluator_prompt_version: str = "outfit-evaluator-v1"
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr = SecretStr("")
-    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"),
+    )
     redis_url: str = "redis://127.0.0.1:6379/0"
     celery_task_max_retries: int = Field(default=2, ge=0)
     celery_task_retry_delay_seconds: int = Field(default=5, ge=0)
     chroma_directory: str = "./chroma"
     chroma_collection_name: str = "wardrobe_items"
     wardrobe_search_limit: int = Field(default=5, ge=1, le=15)
+    styling_candidates_per_category: int = Field(default=3, ge=1, le=5)
 
     model_config = SettingsConfigDict(
         env_file=REPOSITORY_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     @property

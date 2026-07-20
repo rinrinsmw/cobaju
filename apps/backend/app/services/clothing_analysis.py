@@ -1,6 +1,6 @@
 """Synchronous clothing guardrail, vision analysis, and tracing workflow."""
 
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from app.core.config import Settings
 from app.models.clothing_item import ClothingItem, ProcessingStatus
+from app.observability import Observability
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.wardrobe import (
     mark_item_processing,
@@ -29,11 +30,11 @@ class ClothingVisionProvider(Protocol):
 
 
 class ClothingAnalysisTracer:
-    """Create Langfuse observations only when telemetry is explicitly enabled."""
+    """Compatibility wrapper around the shared observability abstraction."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client: Any | None = None
+        self._observability = Observability(settings)
 
     def observation(
         self,
@@ -42,21 +43,7 @@ class ClothingAnalysisTracer:
         as_type: str = "span",
         **attributes: Any,
     ) -> AbstractContextManager[Any]:
-        if not self.settings.langfuse_enabled:
-            return nullcontext()
-        if self._client is None:
-            from langfuse import Langfuse
-
-            self._client = Langfuse(
-                public_key=self.settings.langfuse_public_key,
-                secret_key=self.settings.langfuse_secret_key.get_secret_value(),
-                base_url=self.settings.langfuse_base_url,
-            )
-        return self._client.start_as_current_observation(
-            as_type=as_type,
-            name=name,
-            **attributes,
-        )
+        return self._observability.observe(name, as_type=as_type, **attributes)
 
 
 def analyze_clothing_item(

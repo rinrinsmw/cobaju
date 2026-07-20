@@ -17,5 +17,6 @@ if (!window.localStorage) {
 
 afterEach(() => {
   window.localStorage.clear()
+  window.sessionStorage.clear()
   document.body.replaceChildren()
 })

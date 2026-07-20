@@ -12,6 +12,11 @@ from app.dependencies import (
     get_stylist_runner,
 )
 from app.models.user import User
+from app.observability import (
+    log_development_traceback,
+    structured_log,
+    stylist_failure_fields,
+)
 from app.schemas.chat import ChatRequest, StylistResponse
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import ChatGuardrailError, ChatScopeClassifier
@@ -34,7 +39,7 @@ async def recommend_outfit(
     """Guard one request, then run one wardrobe-grounded stylist agent."""
 
     try:
-        return await create_stylist_response(
+        response = await create_stylist_response(
             message=request.message,
             current_user=current_user,
             classifier=classifier,
@@ -43,7 +48,24 @@ async def recommend_outfit(
             session=session,
             settings=get_settings(),
         )
+        diagnostics = stylist_failure_fields()
+        total_latency_ms = diagnostics.pop("duration_ms")
+        evaluator_failures = diagnostics.get("evaluator_failures", [])
+        structured_log(
+            "stylist_request_completed",
+            status=status.HTTP_200_OK,
+            total_latency_ms=total_latency_ms,
+            evaluator_nonblocking=bool(evaluator_failures),
+            **diagnostics,
+        )
+        return response
     except (ChatGuardrailError, StylistAgentError) as error:
+        structured_log(
+            "stylist_request_failed",
+            error_type=type(error).__name__,
+            **stylist_failure_fields(),
+        )
+        log_development_traceback(error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Wardrobe stylist is temporarily unavailable",

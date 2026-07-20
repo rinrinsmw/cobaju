@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.security import decode_access_token
 from app.database import get_session
 from app.models.user import User
+from app.observability import bind_authenticated_user, get_observability
 from app.services.mcp_client import open_user_scoped_mcp_session
 from app.services.chat_guardrails import OpenRouterChatScopeClassifier
 from app.services.outfit_evaluator import OpenAIAgentsOutfitEvaluator
@@ -26,21 +27,21 @@ bearer_scheme = HTTPBearer(auto_error=False)
 def get_chat_scope_classifier() -> OpenRouterChatScopeClassifier:
     """Return the configured classifier; tests may override this dependency."""
 
-    return OpenRouterChatScopeClassifier(get_settings())
+    return OpenRouterChatScopeClassifier(get_settings(), get_observability())
 
 
 @lru_cache
 def get_stylist_runner() -> OpenAIAgentsStylistRunner:
     """Return the configured Agents SDK runner; tests may override it."""
 
-    return OpenAIAgentsStylistRunner(get_settings())
+    return OpenAIAgentsStylistRunner(get_settings(), get_observability())
 
 
 @lru_cache
 def get_outfit_evaluator() -> OpenAIAgentsOutfitEvaluator:
     """Return the separate evaluator agent; tests may override it."""
 
-    return OpenAIAgentsOutfitEvaluator(get_settings())
+    return OpenAIAgentsOutfitEvaluator(get_settings(), get_observability())
 
 
 @lru_cache
@@ -67,18 +68,20 @@ def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise unauthorized
+    observability = get_observability()
+    with observability.observe("auth.validate", as_type="span"):
+        if credentials is None or credentials.scheme.lower() != "bearer":
+            raise unauthorized
+        user_id = decode_access_token(credentials.credentials)
+        if user_id is None:
+            raise unauthorized
 
-    user_id = decode_access_token(credentials.credentials)
-    if user_id is None:
-        raise unauthorized
-
-    user = session.get(User, user_id)
-    if user is None:
-        raise unauthorized
-
-    return user
+        user = session.get(User, user_id)
+        if user is None:
+            raise unauthorized
+        bind_authenticated_user(user_id)
+        observability.update_current(output={"authenticated": True})
+        return user
 
 
 async def get_current_user_mcp_session(

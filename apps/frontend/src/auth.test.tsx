@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiRequest, ApiError, SESSION_EXPIRED_MESSAGE } from './api'
 import { AuthProvider, useAuth } from './auth'
 import AuthScreen from './components/AuthScreen'
+import { getStylistSessionKey } from './stylistSession'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -15,8 +16,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function AuthBoundary() {
-  const { user } = useAuth()
-  return user ? <p data-testid="authenticated-user">{user.email}</p> : <AuthScreen />
+  const { user, logout } = useAuth()
+  return user ? <><p data-testid="authenticated-user">{user.email}</p><button onClick={logout}>Sign out</button></> : <AuthScreen />
 }
 
 async function renderAuthenticated(
@@ -61,6 +62,7 @@ describe('centralized expired-session handling', () => {
     const rendered = await renderAuthenticated(fetchMock)
     mountedRoot = rendered.root
     rendered.queryClient.setQueryData(['wardrobe'], [{ id: 12 }])
+    window.sessionStorage.setItem(getStylistSessionKey(1), 'saved conversation')
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Could not validate credentials' }, 401))
 
     let requestError: unknown
@@ -76,9 +78,23 @@ describe('centralized expired-session handling', () => {
     expect((requestError as ApiError).message).toBe(SESSION_EXPIRED_MESSAGE)
     expect(window.localStorage.getItem('access_token')).toBeNull()
     expect(rendered.queryClient.getQueryData(['wardrobe'])).toBeUndefined()
+    expect(window.sessionStorage.getItem(getStylistSessionKey(1))).toBeNull()
     expect(document.querySelector('[data-testid="authenticated-user"]')).toBeNull()
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(SESSION_EXPIRED_MESSAGE)
     expect(document.body.textContent).toContain('Welcome back.')
+  })
+
+  it('clears the current user stylist session on explicit logout', async () => {
+    const fetchMock = vi.fn()
+    const rendered = await renderAuthenticated(fetchMock)
+    mountedRoot = rendered.root
+    window.sessionStorage.setItem(getStylistSessionKey(1), 'saved conversation')
+
+    const signOut = [...document.querySelectorAll('button')].find(element => element.textContent === 'Sign out')
+    await act(async () => signOut?.click())
+
+    expect(window.sessionStorage.getItem(getStylistSessionKey(1))).toBeNull()
+    expect(window.localStorage.getItem('access_token')).toBeNull()
   })
 
   it.each([400, 500])('keeps the authenticated session for a protected %s response', async status => {

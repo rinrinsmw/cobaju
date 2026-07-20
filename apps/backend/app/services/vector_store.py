@@ -1,6 +1,6 @@
 """Persistent, ownership-filtered Chroma index for confirmed wardrobe items."""
 
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +8,7 @@ import chromadb
 
 from app.core.config import Settings
 from app.models.clothing_item import ClothingCategory, ClothingItem
+from app.observability import Observability
 from app.services.embeddings import EmbeddingProvider, OpenRouterEmbeddingProvider
 
 
@@ -37,11 +38,11 @@ def build_clothing_description(item: ClothingItem) -> str:
 
 
 class RetrievalTracer:
-    """Create a Langfuse retrieval span only when telemetry is enabled."""
+    """Compatibility wrapper around the shared observability abstraction."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client: Any | None = None
+        self._observability = Observability(settings)
 
     def observation(
         self,
@@ -49,19 +50,9 @@ class RetrievalTracer:
         user_id: int,
         category: ClothingCategory | None,
     ) -> AbstractContextManager[Any]:
-        if not self.settings.langfuse_enabled:
-            return nullcontext()
-        if self._client is None:
-            from langfuse import Langfuse
-
-            self._client = Langfuse(
-                public_key=self.settings.langfuse_public_key,
-                secret_key=self.settings.langfuse_secret_key.get_secret_value(),
-                base_url=self.settings.langfuse_base_url,
-            )
-        return self._client.start_as_current_observation(
-            as_type="span",
-            name="wardrobe_retrieval",
+        return self._observability.observe(
+            "wardrobe_retrieval",
+            as_type="retriever",
             input={
                 "user_id": user_id,
                 "category": category.value if category else None,

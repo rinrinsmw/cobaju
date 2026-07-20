@@ -8,6 +8,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.observability import Observability, finish_model_attempt, start_model_attempt
 from app.schemas.chat import ChatScopeDecision
 
 
@@ -38,8 +39,11 @@ def contains_prompt_injection(message: str) -> bool:
 class OpenRouterChatScopeClassifier:
     """Classify chat scope using strict structured output at temperature 0.0."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, observability: Observability | None = None
+    ) -> None:
         self.settings = settings
+        self.observability = observability
 
     async def classify(self, message: str) -> ChatScopeDecision:
         api_key = self.settings.openrouter_api_key.get_secret_value()
@@ -79,6 +83,7 @@ class OpenRouterChatScopeClassifier:
             "X-OpenRouter-Title": self.settings.app_name,
         }
 
+        attempt_id = start_model_attempt("guardrail")
         try:
             async with httpx.AsyncClient(timeout=self.settings.openrouter_timeout_seconds) as client:
                 response = await client.post(
@@ -91,7 +96,28 @@ class OpenRouterChatScopeClassifier:
             content = body["choices"][0]["message"]["content"]
             if not isinstance(content, str):
                 raise TypeError("message content is not text")
-            return ChatScopeDecision.model_validate(json.loads(content))
+            decision = ChatScopeDecision.model_validate(json.loads(content))
+            if self.observability is not None:
+                usage = body.get("usage") or {}
+                usage_details = {
+                    "input": int(usage.get("prompt_tokens") or 0),
+                    "output": int(usage.get("completion_tokens") or 0),
+                    "total": int(usage.get("total_tokens") or 0),
+                }
+                cost = usage.get("cost")
+                update: dict[str, Any] = {
+                    "output": {"allowed": decision.allowed, "reason": decision.reason},
+                    "usage_details": usage_details,
+                    "metadata": {
+                        "finish_reason": body["choices"][0].get("finish_reason"),
+                        "prompt_version": self.settings.chat_guardrail_prompt_version,
+                    },
+                }
+                if isinstance(cost, (int, float)):
+                    update["cost_details"] = {"total": float(cost)}
+                self.observability.update_current(**update)
+            finish_model_attempt(attempt_id)
+            return decision
         except (
             httpx.HTTPError,
             KeyError,
@@ -100,4 +126,5 @@ class OpenRouterChatScopeClassifier:
             json.JSONDecodeError,
             ValidationError,
         ) as error:
+            finish_model_attempt(attempt_id, error=error)
             raise ChatGuardrailError("Chat guardrail returned an invalid response") from error
