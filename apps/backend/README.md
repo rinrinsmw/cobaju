@@ -172,11 +172,12 @@ Create and update bodies use `name`, `category`, `color`, and optional
 `bag`, and `accessory`. A manual create is immediately `completed`; processing
 status is returned by the API but cannot be set by the client.
 
-For the normal upload flow, `POST /wardrobe/items/upload` combines record
-creation and image storage in one multipart request using the field name
-`image`. It creates a `pending` draft whose temporary metadata is replaced by
-vision analysis. If either storage or database creation fails, neither an
-orphan file nor an orphan record is retained.
+For the normal upload flow, `POST /wardrobe/items/upload` combines internal
+record creation and image storage in one multipart request using the field name
+`image`. The response includes a short-lived `analysis_token` used only by the
+status poll. The internal draft is excluded from `GET /wardrobe/items` until
+vision analysis succeeds and replaces its temporary metadata. If storage or
+database creation fails, neither an orphan file nor an orphan record is kept.
 
 The older `POST /wardrobe/items/{item_id}/image` endpoint remains available for
 attaching an image to an existing owned item. Both endpoints accept one JPG,
@@ -186,15 +187,20 @@ storage. An existing item accepts only one image.
 
 The analysis endpoint claims an item as `processing`, sends its database ID to
 Redis, and returns HTTP 202. The Celery worker first runs a temperature-0.0
-clothing guardrail. Rejected images are detached and deleted. Accepted images
-go to the configured vision model at temperature 0.1 and produce only `name`,
+clothing guardrail. When a normal new upload is rejected, the worker deletes
+the image and its internal database row. A pre-existing successful wardrobe
+item is preserved if a newly attached image is rejected. Accepted images go to
+the configured vision model at temperature 0.1 and produce only `name`,
 `category`, `color`, and optional `description`. Pydantic validates these
-fields before saving. Poll `GET /wardrobe/items/{item_id}/status`; successful
-analysis reports `completed` with `needs_confirmation: true`. The owner can
-edit the underlying pending draft through `PATCH`, then call `confirm` to mark
-the wardrobe item `completed`. The processing state blocks duplicate work while
-the task runs, and `analysis_completed` blocks re-analysis after metadata is
-ready.
+fields before saving. Poll
+`GET /wardrobe/items/{item_id}/status?analysis_token=TOKEN`; successful analysis
+reports `completed` with `needs_confirmation: true`. After terminal content
+rejection, the owner-bound token lets this endpoint return HTTP 422 with code
+`NO_CLEAR_CLOTHING_ITEM` even though no failed wardrobe row is retained. The
+owner can edit a successful pending draft through `PATCH`, then call `confirm`
+to mark the wardrobe item `completed`. The processing state blocks duplicate
+work while the task runs, and `analysis_completed` blocks re-analysis after
+metadata is ready.
 
 Provider failures retry according to `CELERY_TASK_MAX_RETRIES` and
 `CELERY_TASK_RETRY_DELAY_SECONDS`, then remain `failed`. If Redis cannot accept

@@ -57,6 +57,7 @@ class ClothingItem(SQLModel, table=True):
     description: str | None = Field(default=None, max_length=500)
     original_image_path: str | None = Field(default=None, max_length=500)
     analysis_completed: bool = Field(default=False)
+    is_temporary_upload: bool = Field(default=False, index=True)
     processing_status: ProcessingStatus = Field(
         default=ProcessingStatus.COMPLETED,
         sa_column=Column(

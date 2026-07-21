@@ -12,7 +12,6 @@ from app.observability import Observability
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.wardrobe import (
     mark_item_processing,
-    reject_item_image,
     save_generated_metadata,
 )
 
@@ -55,8 +54,9 @@ def analyze_clothing_item(
 ) -> tuple[ClothingItem, str | None]:
     """Run guardrail then metadata analysis and persist a reviewable draft.
 
-    The returned optional path is the rejected file that the route must delete
-    after its database reference has safely been cleared.
+    The returned optional path identifies a terminal content rejection. The
+    worker owns storage and database cleanup so it can keep those operations
+    ordered and retryable.
     """
 
     tracer = ClothingAnalysisTracer(settings)
@@ -80,7 +80,7 @@ def analyze_clothing_item(
                 guardrail = provider.classify_image(image_path)
 
             if not guardrail.is_clothing:
-                return item, reject_item_image(session, item)
+                return item, item.original_image_path
 
             with tracer.observation(
                 "vision_analysis",

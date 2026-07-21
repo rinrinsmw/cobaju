@@ -57,3 +57,50 @@ def decode_access_token(token: str) -> int | None:
         return int(subject) if subject is not None else None
     except (InvalidTokenError, TypeError, ValueError):
         return None
+
+
+def create_upload_analysis_token(user_id: int, item_id: int) -> str:
+    """Sign a short-lived receipt used only while polling a new upload."""
+
+    settings = get_settings()
+    secret = settings.jwt_secret_key.get_secret_value()
+    if not secret:
+        raise RuntimeError("JWT_SECRET_KEY must be configured")
+
+    expires_at = datetime.now(UTC) + timedelta(
+        minutes=settings.jwt_access_token_expire_minutes
+    )
+    payload = {
+        "sub": str(user_id),
+        "item_id": item_id,
+        "purpose": "wardrobe_upload_analysis",
+        "exp": expires_at,
+    }
+    return jwt.encode(payload, secret, algorithm=settings.jwt_algorithm)
+
+
+def validate_upload_analysis_token(
+    token: str,
+    user_id: int,
+    item_id: int,
+) -> bool:
+    """Validate a polling receipt without trusting IDs supplied by the client."""
+
+    settings = get_settings()
+    secret = settings.jwt_secret_key.get_secret_value()
+    if not secret:
+        raise RuntimeError("JWT_SECRET_KEY must be configured")
+
+    try:
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        return (
+            payload.get("purpose") == "wardrobe_upload_analysis"
+            and int(payload.get("sub")) == user_id
+            and int(payload.get("item_id")) == item_id
+        )
+    except (InvalidTokenError, TypeError, ValueError):
+        return False

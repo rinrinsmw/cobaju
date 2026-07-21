@@ -18,6 +18,7 @@ from app.routers import wardrobe as wardrobe_router
 from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
 from app.services.clothing_analysis import ClothingAnalysisError, ClothingAnalysisTracer
 from app.services.openrouter import OpenRouterResponseError, OpenRouterVisionProvider
+from app.tasks import clothing_processing
 from app.tasks.clothing_processing import (
     ClothingTaskEnqueueError,
     process_clothing_item,
@@ -135,6 +136,22 @@ def create_and_upload(client: TestClient, headers: dict[str, str]) -> tuple[int,
     return item_id, uploaded.json()["original_image_path"]
 
 
+def create_combined_upload(
+    client: TestClient,
+    headers: dict[str, str],
+) -> tuple[int, str, str]:
+    """Create the internal placeholder used by the normal new-upload flow."""
+
+    uploaded = client.post(
+        "/wardrobe/items/upload",
+        headers=headers,
+        files={"image": ("item.jpg", JPEG_BYTES, "image/jpeg")},
+    )
+    assert uploaded.status_code == 201
+    body = uploaded.json()
+    return body["id"], body["original_image_path"], body["analysis_token"]
+
+
 def test_clothing_image_generates_editable_draft_then_user_confirms(
     client: tuple[TestClient, Path, FakeVisionProvider],
 ) -> None:
@@ -180,13 +197,41 @@ def test_clothing_image_generates_editable_draft_then_user_confirms(
     assert confirmed.json()["processing_status"] == "completed"
 
 
+def test_successful_combined_upload_becomes_visible_after_analysis(
+    client: tuple[TestClient, Path, FakeVisionProvider],
+) -> None:
+    test_client, _, _ = client
+    headers = auth_headers(test_client, "combined-success@example.com")
+    item_id, _, analysis_token = create_combined_upload(test_client, headers)
+
+    assert test_client.get("/wardrobe/items", headers=headers).json() == []
+    queued = test_client.post(
+        f"/wardrobe/items/{item_id}/analyze",
+        headers=headers,
+    )
+    processing_status = test_client.get(
+        f"/wardrobe/items/{item_id}/status",
+        headers=headers,
+        params={"analysis_token": analysis_token},
+    )
+    listed = test_client.get("/wardrobe/items", headers=headers)
+
+    assert queued.status_code == 202
+    assert processing_status.status_code == 200
+    assert processing_status.json()["needs_confirmation"] is True
+    assert [item["id"] for item in listed.json()] == [item_id]
+
+
 def test_clear_non_clothing_image_is_rejected_and_deleted(
     client: tuple[TestClient, Path, FakeVisionProvider],
 ) -> None:
     test_client, upload_directory, fake_provider = client
     fake_provider.is_clothing = False
     headers = auth_headers(test_client, "reject@example.com")
-    item_id, relative_path = create_and_upload(test_client, headers)
+    item_id, relative_path, analysis_token = create_combined_upload(
+        test_client,
+        headers,
+    )
     stored_file = upload_directory / relative_path
 
     queued = test_client.post(
@@ -194,15 +239,57 @@ def test_clear_non_clothing_image_is_rejected_and_deleted(
     )
     detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
     processing_status = test_client.get(
-        f"/wardrobe/items/{item_id}/status", headers=headers
+        f"/wardrobe/items/{item_id}/status",
+        headers=headers,
+        params={"analysis_token": analysis_token},
     )
 
     assert queued.status_code == 202
     assert fake_provider.analyze_calls == 0
-    assert detail.json()["original_image_path"] is None
-    assert detail.json()["processing_status"] == "failed"
-    assert processing_status.json()["status"] == "failed"
+    assert detail.status_code == 404
+    assert processing_status.status_code == 422
+    assert processing_status.json() == {
+        "detail": {
+            "code": "NO_CLEAR_CLOTHING_ITEM",
+            "message": (
+                "Cobaju could not identify one clear clothing item in this image."
+            ),
+        }
+    }
+    assert test_client.get(
+        f"/wardrobe/items/{item_id}/status",
+        headers=headers,
+    ).status_code == 404
+    other_headers = auth_headers(test_client, "rejection-other@example.com")
+    assert test_client.get(
+        f"/wardrobe/items/{item_id}/status",
+        headers=other_headers,
+        params={"analysis_token": analysis_token},
+    ).status_code == 404
+    assert test_client.get("/wardrobe/items", headers=headers).json() == []
     assert not stored_file.exists()
+
+
+def test_rejected_image_does_not_delete_pre_existing_item(
+    client: tuple[TestClient, Path, FakeVisionProvider],
+) -> None:
+    test_client, upload_directory, fake_provider = client
+    fake_provider.is_clothing = False
+    headers = auth_headers(test_client, "existing-reject@example.com")
+    item_id, relative_path = create_and_upload(test_client, headers)
+
+    queued = test_client.post(
+        f"/wardrobe/items/{item_id}/analyze",
+        headers=headers,
+    )
+    detail = test_client.get(f"/wardrobe/items/{item_id}", headers=headers)
+
+    assert queued.status_code == 202
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "Upload"
+    assert detail.json()["original_image_path"] is None
+    assert detail.json()["processing_status"] == "completed"
+    assert not (upload_directory / relative_path).exists()
 
 
 def test_analysis_and_confirmation_enforce_ownership_and_state(
@@ -284,6 +371,8 @@ def test_broker_failure_restores_pending_item_for_retry(
 
 def create_processing_test_item(
     tmp_path: Path,
+    *,
+    temporary_upload: bool = False,
 ) -> tuple[Any, int, Settings]:
     """Create one claimed item for direct worker lifecycle tests."""
 
@@ -308,6 +397,7 @@ def create_processing_test_item(
             color="Unknown",
             original_image_path="1/item.jpg",
             analysis_completed=False,
+            is_temporary_upload=temporary_upload,
             processing_status=ProcessingStatus.PROCESSING,
         )
         session.add(item)
@@ -317,6 +407,44 @@ def create_processing_test_item(
 
     assert item_id is not None
     return test_engine, item_id, Settings(upload_directory=str(upload_directory))
+
+
+def test_rejected_upload_cleanup_retries_without_orphaning_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_engine, item_id, settings = create_processing_test_item(
+        tmp_path,
+        temporary_upload=True,
+    )
+    provider = FakeVisionProvider()
+    provider.is_clothing = False
+    stored_file = settings.resolved_upload_directory / "1/item.jpg"
+    real_delete = clothing_processing.delete_stored_image
+    delete_attempts = 0
+
+    def fail_once(upload_directory: Path, relative_path: str) -> None:
+        nonlocal delete_attempts
+        delete_attempts += 1
+        if delete_attempts == 1:
+            raise OSError("temporary storage failure")
+        real_delete(upload_directory, relative_path)
+
+    monkeypatch.setattr(clothing_processing, "delete_stored_image", fail_once)
+
+    with Session(test_engine) as session:
+        with pytest.raises(ClothingAnalysisError):
+            run_clothing_processing(session, item_id, provider, settings)
+    with Session(test_engine) as session:
+        retained = session.get(ClothingItem, item_id)
+        assert retained is not None
+        assert retained.original_image_path == "1/item.jpg"
+        assert stored_file.exists()
+    with Session(test_engine) as session:
+        assert run_clothing_processing(session, item_id, provider, settings) == "rejected"
+    with Session(test_engine) as session:
+        assert session.get(ClothingItem, item_id) is None
+        assert not stored_file.exists()
 
 
 def test_first_temporary_failure_remains_processing(tmp_path: Path) -> None:

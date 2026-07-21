@@ -13,12 +13,21 @@ from app.services.clothing_analysis import (
     analyze_clothing_item,
 )
 from app.services.image_uploads import delete_stored_image
+from app.observability import structured_log
 from app.services.openrouter import OpenRouterVisionProvider
-from app.services.wardrobe import mark_item_failed
+from app.services.wardrobe import (
+    delete_temporary_upload,
+    mark_item_failed,
+    reject_item_image,
+)
 
 
 class ClothingTaskEnqueueError(Exception):
     """Raised when a clothing task cannot be sent to Redis."""
+
+
+class RejectedUploadCleanupError(ClothingAnalysisError):
+    """Raised when terminal rejection cleanup should be retried."""
 
 
 def enqueue_clothing_analysis(item_id: int) -> None:
@@ -28,6 +37,29 @@ def enqueue_clothing_analysis(item_id: int) -> None:
         process_clothing_item.delay(item_id)
     except Exception as error:
         raise ClothingTaskEnqueueError from error
+
+
+def cleanup_rejected_upload(
+    session: Session,
+    item: ClothingItem,
+    settings: Settings,
+) -> None:
+    """Remove rejected storage, then delete or restore the owning row."""
+
+    rejected_path = item.original_image_path
+    temporary_upload = item.is_temporary_upload
+    try:
+        if rejected_path is not None:
+            delete_stored_image(settings.resolved_upload_directory, rejected_path)
+        if temporary_upload:
+            delete_temporary_upload(session, item)
+        else:
+            reject_item_image(session, item)
+    except Exception as error:
+        session.rollback()
+        raise RejectedUploadCleanupError(
+            "Rejected upload cleanup failed"
+        ) from error
 
 
 def run_clothing_processing(
@@ -53,6 +85,9 @@ def run_clothing_processing(
     }:
         return "skipped"
     if item.original_image_path is None:
+        if item.is_temporary_upload:
+            delete_temporary_upload(session, item)
+            return "rejected"
         mark_item_failed(session, item)
         return "failed"
 
@@ -63,6 +98,9 @@ def run_clothing_processing(
         not image_path.is_relative_to(settings.resolved_upload_directory)
         or not image_path.is_file()
     ):
+        if item.is_temporary_upload:
+            delete_temporary_upload(session, item)
+            return "rejected"
         mark_item_failed(session, item)
         return "failed"
 
@@ -74,12 +112,16 @@ def run_clothing_processing(
         settings,
     )
     if rejected_path is not None:
-        try:
-            delete_stored_image(settings.resolved_upload_directory, rejected_path)
-        except OSError:
-            # The database already detached the rejected content. Cleanup can
-            # safely be best-effort without making the record inconsistent.
-            pass
+        # Delete storage first. If it fails, the still-referenced database row
+        # lets a Celery retry attempt the same idempotent cleanup again.
+        temporary_upload = item.is_temporary_upload
+        cleanup_rejected_upload(session, item, settings)
+        structured_log(
+            "clothing_upload_rejected",
+            item_id=item_id,
+            code="NO_CLEAR_CLOTHING_ITEM",
+            temporary_upload=temporary_upload,
+        )
         return "rejected"
     return "completed"
 
@@ -93,6 +135,18 @@ def process_clothing_item(task: Task, item_id: int) -> str:
     try:
         with Session(engine) as session:
             return run_clothing_processing(session, item_id, provider, settings)
+    except RejectedUploadCleanupError as error:
+        if task.request.retries >= settings.celery_task_max_retries:
+            with Session(engine) as session:
+                item = session.get(ClothingItem, item_id)
+                if item is not None:
+                    cleanup_rejected_upload(session, item, settings)
+            return "rejected"
+        raise task.retry(
+            exc=error,
+            countdown=settings.celery_task_retry_delay_seconds,
+            max_retries=settings.celery_task_max_retries,
+        )
     except ClothingAnalysisError as error:
         if task.request.retries >= settings.celery_task_max_retries:
             with Session(engine) as session:

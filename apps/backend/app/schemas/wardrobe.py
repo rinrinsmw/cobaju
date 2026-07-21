@@ -98,6 +98,12 @@ class ClothingItemRead(ClothingItemFields):
     processing_status: ProcessingStatus
 
 
+class ClothingUploadRead(ClothingItemRead):
+    """New-upload response with an authenticated asynchronous polling receipt."""
+
+    analysis_token: str
+
+
 class ClothingProcessingStatusRead(BaseModel):
     """Small polling response for one authenticated user's analysis job."""
 

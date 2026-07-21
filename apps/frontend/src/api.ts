@@ -21,6 +21,10 @@ export interface ProcessingResult {
   needs_confirmation: boolean
 }
 
+export interface ClothingUpload extends ClothingItem {
+  analysis_token: string
+}
+
 export interface StylistResponse {
   status: 'recommendation' | 'redirected' | 'rejected'
   message: string
@@ -60,8 +64,9 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (!response.ok) {
     let message = 'Something went wrong. Please try again.'
     try {
-      const body = await response.json() as { detail?: string | Array<{ msg: string }> }
+      const body = await response.json() as { detail?: string | { message?: string } | Array<{ msg: string }> }
       if (typeof body.detail === 'string') message = body.detail
+      else if (body.detail && !Array.isArray(body.detail) && typeof body.detail.message === 'string') message = body.detail.message
       else if (Array.isArray(body.detail)) message = body.detail.map(error => error.msg).join(', ')
     } catch { /* Use the safe fallback for non-JSON failures. */ }
     throw new ApiError(response.status, message)

@@ -106,12 +106,13 @@ def test_combined_upload_creates_pending_item_and_stores_image(
     assert body["color"] == "Unknown"
     assert body["analysis_completed"] is False
     assert body["processing_status"] == "pending"
+    assert isinstance(body["analysis_token"], str)
     assert body["original_image_path"].startswith("1/")
     assert body["original_image_path"].endswith(extension)
     assert (upload_directory / body["original_image_path"]).read_bytes() == content
 
     listed_items = test_client.get("/wardrobe/items", headers=headers).json()
-    assert [item["id"] for item in listed_items] == [body["id"]]
+    assert listed_items == []
 
 
 def test_combined_upload_rejects_invalid_image_without_creating_item(

@@ -14,6 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from app.core.config import get_settings
+from app.core.security import (
+    create_upload_analysis_token,
+    validate_upload_analysis_token,
+)
 from app.database import get_session
 from app.dependencies import get_current_user, get_wardrobe_vector_store
 from app.models.clothing_item import ClothingCategory, ClothingItem, ProcessingStatus
@@ -23,6 +27,7 @@ from app.schemas.wardrobe import (
     ClothingItemRead,
     ClothingItemUpdate,
     ClothingProcessingStatusRead,
+    ClothingUploadRead,
     WardrobeSearchResultRead,
 )
 from app.services.image_uploads import (
@@ -83,6 +88,20 @@ def retrieval_unavailable_response() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Wardrobe retrieval is unavailable",
+    )
+
+
+def rejected_upload_response() -> HTTPException:
+    """Return the stable product error for a terminal image rejection."""
+
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "code": "NO_CLEAR_CLOTHING_ITEM",
+            "message": (
+                "Cobaju could not identify one clear clothing item in this image."
+            ),
+        },
     )
 
 
@@ -172,15 +191,15 @@ def search_items(
 
 @router.post(
     "/upload",
-    response_model=ClothingItemRead,
+    response_model=ClothingUploadRead,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_item_with_image(
     image: UploadFile = File(...),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
-) -> ClothingItem:
-    """Create one pending wardrobe item and store its original image."""
+) -> ClothingUploadRead:
+    """Create one internal upload placeholder and store its original image."""
 
     user_id = require_user_id(current_user)
     settings = get_settings()
@@ -194,7 +213,19 @@ async def create_item_with_image(
         )
         item = create_uploaded_clothing_item(session, user_id, stored_path)
         item_created = True
-        return item
+        if item.id is None:
+            raise SQLAlchemyError("Created clothing item has no ID")
+        return ClothingUploadRead(
+            id=item.id,
+            name=item.name,
+            category=item.category,
+            color=item.color,
+            description=item.description,
+            original_image_path=item.original_image_path,
+            analysis_completed=item.analysis_completed,
+            processing_status=item.processing_status,
+            analysis_token=create_upload_analysis_token(user_id, item.id),
+        )
     except UnsupportedImageError as error:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -400,18 +431,26 @@ def analyze_item_image(
 )
 def read_item_processing_status(
     item_id: int,
+    analysis_token: str | None = None,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ClothingProcessingStatusRead:
-    """Return a compact, ownership-safe status for frontend polling."""
+    """Return processing status or an authenticated terminal rejection."""
 
+    user_id = require_user_id(current_user)
     try:
         item = get_owned_clothing_item(
             session,
-            require_user_id(current_user),
+            user_id,
             item_id,
         )
     except ClothingItemNotFoundError as error:
+        if analysis_token and validate_upload_analysis_token(
+            analysis_token,
+            user_id,
+            item_id,
+        ):
+            raise rejected_upload_response() from error
         raise not_found_response() from error
 
     if item.processing_status == ProcessingStatus.FAILED:

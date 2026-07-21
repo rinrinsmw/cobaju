@@ -100,6 +100,7 @@ def create_uploaded_clothing_item(
         color=PENDING_ITEM_COLOR,
         original_image_path=original_image_path,
         analysis_completed=False,
+        is_temporary_upload=True,
         processing_status=ProcessingStatus.PENDING,
     )
     session.add(item)
@@ -113,11 +114,14 @@ def create_uploaded_clothing_item(
 
 
 def list_clothing_items(session: Session, user_id: int) -> list[ClothingItem]:
-    """Return only items owned by one authenticated user."""
+    """Return owned wardrobe items without internal new-upload placeholders."""
 
     statement = (
         select(ClothingItem)
-        .where(ClothingItem.user_id == user_id)
+        .where(
+            ClothingItem.user_id == user_id,
+            ClothingItem.is_temporary_upload.is_(False),
+        )
         .order_by(ClothingItem.id)
     )
     return list(session.exec(statement).all())
@@ -242,6 +246,7 @@ def save_generated_metadata(
     for field_name, value in metadata.model_dump().items():
         setattr(item, field_name, value)
     item.analysis_completed = True
+    item.is_temporary_upload = False
     item.processing_status = ProcessingStatus.PENDING
     session.add(item)
     session.commit()
@@ -272,16 +277,29 @@ def restore_item_pending(session: Session, item: ClothingItem) -> ClothingItem:
 
 
 def reject_item_image(session: Session, item: ClothingItem) -> str | None:
-    """Detach a rejected image so non-clothing content is not kept."""
+    """Detach a rejected image while preserving a pre-existing wardrobe item."""
 
     rejected_path = item.original_image_path
     item.original_image_path = None
     item.analysis_completed = False
-    item.processing_status = ProcessingStatus.FAILED
+    item.processing_status = ProcessingStatus.COMPLETED
     session.add(item)
     session.commit()
     session.refresh(item)
     return rejected_path
+
+
+def delete_temporary_upload(session: Session, item: ClothingItem) -> None:
+    """Delete only a placeholder created by the combined new-upload route."""
+
+    if not item.is_temporary_upload:
+        raise InvalidProcessingStateError
+    session.delete(item)
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def confirm_analyzed_item(

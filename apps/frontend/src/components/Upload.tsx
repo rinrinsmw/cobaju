@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Page } from '../data'
-import { apiRequest, type ClothingCategory, type ClothingItem, type ProcessingResult } from '../api'
+import { ApiError, apiRequest, type ClothingCategory, type ClothingItem, type ClothingUpload, type ProcessingResult } from '../api'
 
 interface Props { onNavigate: (page: Page) => void }
 type Stage = 'idle' | 'uploading' | 'analyzing' | 'done' | 'error'
@@ -15,18 +15,19 @@ export default function Upload({ onNavigate }: Props) {
   const [dragging, setDragging] = useState(false)
   const [preview, setPreview] = useState('')
   const [item, setItem] = useState<ClothingItem | null>(null)
+  const [analysisToken, setAnalysisToken] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview) }, [preview])
 
-  const runAnalysis = async (draft: ClothingItem) => {
+  const runAnalysis = async (draft: ClothingItem, pollingToken: string) => {
     setError(''); setStage('analyzing')
     try {
       await apiRequest(`/wardrobe/items/${draft.id}/analyze`, { method: 'POST' })
       for (let attempt = 0; attempt < 90; attempt += 1) {
         await delay(1000)
-        const status = await apiRequest<ProcessingResult>(`/wardrobe/items/${draft.id}/status`)
+        const status = await apiRequest<ProcessingResult>(`/wardrobe/items/${draft.id}/status?analysis_token=${encodeURIComponent(pollingToken)}`)
         if (status.needs_confirmation) {
           setItem(await apiRequest<ClothingItem>(`/wardrobe/items/${draft.id}`))
           setStage('done')
@@ -36,6 +37,7 @@ export default function Upload({ onNavigate }: Props) {
       }
       throw new Error('Analysis is taking longer than expected. You can retry from this page.')
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 422) setItem(null)
       setError(caught instanceof Error ? caught.message : 'Analysis failed.')
       setStage('error')
     }
@@ -46,9 +48,10 @@ export default function Upload({ onNavigate }: Props) {
     setPreview(URL.createObjectURL(file)); setError(''); setStage('uploading')
     const form = new FormData(); form.append('image', file)
     try {
-      const draft = await apiRequest<ClothingItem>('/wardrobe/items/upload', { method: 'POST', body: form })
+      const draft = await apiRequest<ClothingUpload>('/wardrobe/items/upload', { method: 'POST', body: form })
+      setAnalysisToken(draft.analysis_token)
       setItem(draft)
-      await runAnalysis(draft)
+      await runAnalysis(draft, draft.analysis_token)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Upload failed.')
       setStage('error')
@@ -88,7 +91,7 @@ export default function Upload({ onNavigate }: Props) {
       <div>
         {stage === 'idle' && <Intro />}
         {(stage === 'uploading' || stage === 'analyzing') && <Processing stage={stage} />}
-        {stage === 'error' && <div><h2 style={sectionTitle}>Something needs attention</h2><p role="alert" style={{ color: '#9f3a32', lineHeight: 1.6, marginBottom: 24 }}>{error}</p>{item && <button onClick={() => void runAnalysis(item)} style={darkButton}>Retry analysis</button>}<button onClick={() => { setStage('idle'); setItem(null); setError('') }} style={secondaryButton}>Choose another image</button></div>}
+        {stage === 'error' && <div><h2 style={sectionTitle}>Something needs attention</h2><p role="alert" style={{ color: '#9f3a32', lineHeight: 1.6, marginBottom: 24 }}>{error}</p>{item && analysisToken && <button onClick={() => void runAnalysis(item, analysisToken)} style={darkButton}>Retry analysis</button>}<button onClick={() => { setStage('idle'); setItem(null); setAnalysisToken(''); setError('') }} style={secondaryButton}>Choose another image</button></div>}
         {stage === 'done' && item && <div><h2 style={sectionTitle}>Analysis complete</h2><div style={{ display: 'grid', gap: 14 }}>
           <Field label="Name"><input value={item.name} onChange={event => change('name', event.target.value)} style={fieldStyle} /></Field>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><Field label="Category"><select value={item.category} onChange={event => change('category', event.target.value)} style={fieldStyle}>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Colour"><input value={item.color} onChange={event => change('color', event.target.value)} style={fieldStyle} /></Field></div>
