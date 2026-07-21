@@ -39,6 +39,15 @@ async function waitForImage(source: string): Promise<HTMLImageElement> {
   throw new Error(`Image did not render with source: ${source}`)
 }
 
+async function waitForButton(label: string): Promise<HTMLButtonElement> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await act(async () => new Promise(resolve => window.setTimeout(resolve, 10)))
+    const match = [...document.querySelectorAll('button')].find(button => button.textContent === label)
+    if (match) return match as HTMLButtonElement
+  }
+  throw new Error(`Button did not render: ${label}`)
+}
+
 describe('Wardrobe item image lifecycle', () => {
   let mountedRoot: Root | undefined
 
@@ -96,5 +105,58 @@ describe('Wardrobe item image lifecycle', () => {
     expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith(`/${item.id}/image`))).toHaveLength(1)
     expect(createObjectURL).toHaveBeenCalledTimes(2)
     expect(revokedUrls.has('blob:second-mount')).toBe(false)
+  })
+
+  it('renders no Style it action and does not navigate when an item is clicked', async () => {
+    const navigate = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/api/wardrobe/items') return jsonResponse([{ ...item, original_image_path: null }])
+      throw new Error(`Unexpected request: ${path}`)
+    }))
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    mountedRoot = createRoot(container)
+
+    await render(mountedRoot, queryClient, <Wardrobe onNavigate={navigate} />)
+    await waitForButton('Delete')
+
+    expect(document.body.textContent).not.toContain('Style it')
+
+    await act(async () => container.querySelector<HTMLElement>('.masonry-item')?.click())
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('still deletes a wardrobe item after confirmation', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+      const path = String(input)
+      if (path === '/api/wardrobe/items') return jsonResponse([{ ...item, original_image_path: null }])
+      if (path === `/api/wardrobe/items/${item.id}` && options?.method === 'DELETE') {
+        return new Response(null, { status: 204 })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('confirm', vi.fn(() => true))
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    mountedRoot = createRoot(container)
+    await render(mountedRoot, queryClient, <Wardrobe onNavigate={() => undefined} />)
+
+    const deleteButton = await waitForButton('Delete')
+    await act(async () => {
+      deleteButton.click()
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+    })
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete Blue Shirt?')
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/wardrobe/items/${item.id}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    )
   })
 })

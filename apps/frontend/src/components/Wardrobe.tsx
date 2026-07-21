@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Page } from '../data'
 import { apiRequest, fetchItemImage, type ClothingItem } from '../api'
 
-interface Props { onNavigate: (page: Page, prefill?: string) => void }
+interface Props { onNavigate: (page: 'upload') => void }
 const categories = ['All', 'Top', 'Bottom', 'Dress', 'Outerwear', 'Shoes', 'Bag', 'Accessory']
 const emoji: Record<string, string> = { top: '👔', bottom: '👖', dress: '👗', outerwear: '🧥', shoes: '👞', bag: '👜', accessory: '⌚' }
 
@@ -63,8 +62,7 @@ export default function Wardrobe({ onNavigate }: Props) {
         {filtered.map((item, index) => <div key={item.id} className="masonry-item">
           <div onMouseEnter={() => setHovered(item.id)} onMouseLeave={() => setHovered(null)} style={{ height: [320, 260, 380, 300][index % 4], borderRadius: 6, overflow: 'hidden', background: '#ddd4c7', position: 'relative', transform: hovered === item.id ? 'translateY(-5px)' : 'none', transition: 'transform .25s' }}>
             <ItemPhoto item={item} />
-            <div style={{ position: 'absolute', inset: 0, padding: 15, display: 'flex', alignItems: 'flex-end', gap: 8, background: 'linear-gradient(to top, rgba(16,15,13,.72), transparent 55%)', opacity: hovered === item.id ? 1 : 0, transition: 'opacity .2s' }}>
-              <button onClick={() => onNavigate('stylist', `Style my ${item.name}`)} style={lightButton}>Style it</button>
+            <div style={{ position: 'absolute', inset: 0, padding: 15, display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', background: 'linear-gradient(to top, rgba(16,15,13,.72), transparent 55%)', opacity: hovered === item.id ? 1 : 0, transition: 'opacity .2s' }}>
               <button onClick={() => { if (window.confirm(`Delete ${item.name}?`)) remove.mutate(item.id) }} style={lightButton}>Delete</button>
             </div>
           </div>
