@@ -11,6 +11,7 @@ from app.database import get_session
 from app.dependencies import get_current_user
 from app.main import app
 from app.models.clothing_item import ClothingCategory, ClothingItem
+from app.models.recommendation import Recommendation
 from app.models.user import User
 from app.schemas.chat import RecommendedOwnedItem, StylistResponse
 from app.services.recommendations import (
@@ -38,6 +39,7 @@ def history_session() -> Generator[Session, None, None]:
                 name="Blue Oxford",
                 category=ClothingCategory.TOP,
                 color="blue",
+                original_image_path="uploads/blue-oxford.jpg",
             )
         )
         session.add(
@@ -159,3 +161,78 @@ def test_history_api_requires_authentication() -> None:
         response = client.get("/recommendations")
 
     assert response.status_code == 401
+
+
+def test_owner_can_delete_lookbook_entry_without_deleting_wardrobe_item(
+    history_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = save_completed_recommendation(
+        history_session,
+        user_id=1,
+        original_request="Owner's removable look",
+        response=completed_response(10),
+        evaluation_score=9,
+    )
+    assert saved.id is not None
+
+    def session_override() -> Generator[Session, None, None]:
+        yield history_session
+
+    app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="owner@example.com", hashed_password="hash"
+    )
+    delete_events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "app.routers.recommendations.structured_log",
+        lambda event, **fields: delete_events.append((event, fields)),
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.delete(f"/recommendations/{saved.id}")
+            history_response = client.get("/recommendations")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert history_response.json() == []
+    assert history_session.get(Recommendation, saved.id) is None
+    wardrobe_item = history_session.get(ClothingItem, 10)
+    assert wardrobe_item is not None
+    assert wardrobe_item.original_image_path == "uploads/blue-oxford.jpg"
+    event, fields = delete_events[0]
+    assert event == "recommendation_deleted"
+    assert fields["recommendation_id"] == saved.id
+    assert fields["user_id"]
+    assert fields["delete_success"] is True
+    assert isinstance(fields["delete_latency_ms"], float)
+
+
+def test_another_user_cannot_delete_recommendation(
+    history_session: Session,
+) -> None:
+    saved = save_completed_recommendation(
+        history_session,
+        user_id=1,
+        original_request="Owner's private look",
+        response=completed_response(10),
+        evaluation_score=9,
+    )
+    assert saved.id is not None
+
+    def session_override() -> Generator[Session, None, None]:
+        yield history_session
+
+    app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=2, email="other@example.com", hashed_password="hash"
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.delete(f"/recommendations/{saved.id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert history_session.get(Recommendation, saved.id) is not None
+    assert history_session.get(ClothingItem, 10) is not None

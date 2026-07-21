@@ -66,6 +66,7 @@ the existing API error handling.
 | `mcp.save_recommendation` | Post-validation ownership recheck and persistence duration |
 | `evaluator` | Evaluator latency, model, attempt, prompt version and tokens |
 | `recommendation.validate` | Deterministic violations and hallucination result |
+| `recommendation_deleted` | Recommendation ID, anonymized user ID, success, and delete latency |
 | `response_formatting` | Final status, repair count, tool counts and quality output |
 
 Langfuse derives observation and total trace latency from start/end timestamps.

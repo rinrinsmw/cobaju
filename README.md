@@ -346,6 +346,14 @@ History never returns another user's records. If a selected item is later
 deleted, the record remains readable and returns that item with
 `available: false`.
 
+Delete only an authenticated user's saved Lookbook entry. This leaves all
+wardrobe items and uploaded clothing images unchanged:
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/recommendations/RECOMMENDATION_ID \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
 ## Frontend integration
 
 Phase 12 connects the approved React interface through the Vite `/api` proxy.

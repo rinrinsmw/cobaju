@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiRequest, getToken } from '../api'
 import type { Page } from '../data'
 
@@ -32,27 +33,33 @@ function displayDate(value: string) {
 }
 
 export default function History({ onNavigate }: Props) {
-  const [looks, setLooks] = useState<RecommendationHistory[]>([])
-  const [loading, setLoading] = useState(true)
-  const [message, setMessage] = useState('')
+  const queryClient = useQueryClient()
+  const isAuthenticated = Boolean(getToken())
+  const [pendingDelete, setPendingDelete] = useState<RecommendationHistory | null>(null)
+  const [toast, setToast] = useState('')
+  const history = useQuery({
+    queryKey: ['history'],
+    queryFn: () => apiRequest<RecommendationHistory[]>('/recommendations'),
+    enabled: isAuthenticated,
+  })
+  const looks = history.data ?? []
+  const loading = isAuthenticated && history.isPending
+  const message = !isAuthenticated
+    ? 'Log in to see your saved recommendations.'
+    : history.error instanceof Error ? history.error.message : ''
+  const deletion = useMutation({
+    mutationFn: (recommendationId: number) => apiRequest<void>(`/recommendations/${recommendationId}`, { method: 'DELETE' }),
+    onSuccess: (_, recommendationId) => {
+      queryClient.setQueryData<RecommendationHistory[]>(['history'], current => current?.filter(look => look.id !== recommendationId) ?? [])
+      queryClient.invalidateQueries({ queryKey: ['history'] })
+      setPendingDelete(null)
+      setToast('Look deleted from your Lookbook.')
+    },
+  })
 
-  useEffect(() => {
-    if (!getToken()) {
-      setMessage('Log in to see your saved recommendations.')
-      setLoading(false)
-      return
-    }
-
-    const controller = new AbortController()
-    apiRequest<RecommendationHistory[]>('/recommendations', { signal: controller.signal })
-      .then(setLooks)
-      .catch(error => {
-        if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message)
-      })
-      .finally(() => setLoading(false))
-
-    return () => controller.abort()
-  }, [])
+  const confirmDelete = () => {
+    if (pendingDelete && !deletion.isPending) deletion.mutate(pendingDelete.id)
+  }
 
   return (
     <div style={{ paddingTop: 64, background: '#f7f4ef', minHeight: '100vh' }}>
@@ -128,6 +135,14 @@ export default function History({ onNavigate }: Props) {
                     background: '#f0ece4', color: '#1a1816', border: 'none',
                     borderRadius: 999, padding: '8px 18px', cursor: 'pointer',
                   }}>Wear again</button>
+                  <button aria-label={`Delete ${look.original_request}`} onClick={() => { deletion.reset(); setToast(''); setPendingDelete(look) }} style={{
+                    position: 'absolute', right: 18, bottom: 18,
+                    fontFamily: 'DM Sans, sans-serif', fontSize: 11, fontWeight: 600,
+                    letterSpacing: '0.04em', textTransform: 'uppercase',
+                    background: 'rgba(247,244,239,.88)', color: '#8b3832',
+                    border: '1px solid rgba(139,56,50,.28)',
+                    borderRadius: 999, padding: '7px 14px', cursor: 'pointer',
+                  }}>Delete</button>
                 </div>
 
                 <div style={{ padding: '12px 2px 0' }}>
@@ -157,6 +172,18 @@ export default function History({ onNavigate }: Props) {
           </div>
         )}
       </div>
+      {toast && <div role="status" style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 210, background: '#1a1816', color: '#f7f4ef', borderRadius: 6, padding: '12px 18px', fontFamily: 'DM Sans, sans-serif', fontSize: 13 }}>{toast}</div>}
+      {pendingDelete && <div role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !deletion.isPending) setPendingDelete(null) }} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(16,15,13,.62)', display: 'grid', placeItems: 'center', padding: 24 }}>
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-look-title" aria-describedby="delete-look-description" style={{ width: 'min(420px, 100%)', background: '#f7f4ef', borderRadius: 8, padding: 28, boxShadow: '0 24px 70px rgba(0,0,0,.24)' }}>
+          <h2 id="delete-look-title" style={{ fontFamily: "'Playfair Display', serif", fontSize: 25, marginBottom: 10 }}>Delete this saved look?</h2>
+          <p id="delete-look-description" style={{ color: '#6b6055', fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>This permanently removes the Lookbook entry. Your wardrobe items and clothing images will stay untouched.</p>
+          {deletion.error && <p role="alert" style={{ color: '#8b3832', fontSize: 13, marginBottom: 8 }}>{deletion.error.message}</p>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 24 }}>
+            <button onClick={() => setPendingDelete(null)} disabled={deletion.isPending} style={{ padding: '9px 16px', borderRadius: 999, border: '1px solid rgba(0,0,0,.16)', background: 'transparent', color: '#1a1816', cursor: 'pointer' }}>Cancel</button>
+            <button onClick={confirmDelete} disabled={deletion.isPending} style={{ padding: '9px 16px', borderRadius: 999, border: 0, background: '#8b3832', color: '#fff', cursor: 'pointer' }}>{deletion.isPending ? 'Deleting…' : 'Delete Look'}</button>
+          </div>
+        </div>
+      </div>}
     </div>
   )
 }

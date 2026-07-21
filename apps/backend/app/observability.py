@@ -160,11 +160,15 @@ def bind_authenticated_user(user_id: int) -> None:
 
     context = current_request_context()
     if context is not None:
-        context.user_id = hashlib.sha256(
-            f"cobaju-user:{user_id}".encode()
-        ).hexdigest()[:16]
+        context.user_id = user_observability_id(user_id)
         if context.root_observation is not None:
             context.root_observation.update(metadata={"user_id": context.user_id})
+
+
+def user_observability_id(user_id: int) -> str:
+    """Return the stable non-reversible user identifier used by telemetry."""
+
+    return hashlib.sha256(f"cobaju-user:{user_id}".encode()).hexdigest()[:16]
 
 
 def safe_request_id(value: str | None) -> str:

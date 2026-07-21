@@ -15,6 +15,10 @@ class InvalidRecommendationItemsError(Exception):
     """Raised when selected IDs are not all owned by the saving user."""
 
 
+class RecommendationNotFoundError(Exception):
+    """Raised when a recommendation does not belong to the requesting user."""
+
+
 def save_completed_recommendation(
     session: Session,
     *,
@@ -105,3 +109,20 @@ def list_recommendation_history(
             )
         )
     return history
+
+
+def delete_recommendation(
+    session: Session, *, recommendation_id: int, user_id: int
+) -> None:
+    """Delete only one recommendation owned by the authenticated user."""
+
+    statement = select(Recommendation).where(
+        Recommendation.id == recommendation_id,
+        Recommendation.user_id == user_id,
+    )
+    recommendation = session.exec(statement).first()
+    if recommendation is None:
+        raise RecommendationNotFoundError
+
+    session.delete(recommendation)
+    session.commit()
