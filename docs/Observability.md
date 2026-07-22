@@ -149,7 +149,7 @@ Prompt versions are independently configurable:
 
 ```dotenv
 CHAT_GUARDRAIL_PROMPT_VERSION=chat-guardrail-v1
-STYLIST_PROMPT_VERSION=stylist-v2
+STYLIST_PROMPT_VERSION=stylist-v3
 STYLIST_REPAIR_PROMPT_VERSION=stylist-repair-v1
 EVALUATOR_PROMPT_VERSION=outfit-evaluator-v1
 ```

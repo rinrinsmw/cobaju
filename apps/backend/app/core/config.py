@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     stylist_max_turns: int = Field(default=8, ge=1, le=20)
     stylist_max_tool_calls: int = Field(default=8, ge=1, le=30)
     chat_guardrail_prompt_version: str = "chat-guardrail-v1"
-    stylist_prompt_version: str = "stylist-v2"
+    stylist_prompt_version: str = "stylist-v3"
     stylist_repair_prompt_version: str = "stylist-repair-v1"
     evaluator_prompt_version: str = "outfit-evaluator-v1"
     langfuse_enabled: bool = False

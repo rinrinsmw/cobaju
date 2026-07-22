@@ -28,7 +28,7 @@ function button(label: string) {
   return match as HTMLButtonElement
 }
 
-describe('Lookbook delete action', () => {
+describe('Lookbook recommendation cards', () => {
   let root: Root | undefined
 
   afterEach(async () => {
@@ -64,6 +64,12 @@ describe('Lookbook delete action', () => {
       root?.render(<QueryClientProvider client={queryClient}><History onNavigate={onNavigate} /></QueryClientProvider>)
     })
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 25)) })
+
+    expect(document.body.textContent).not.toContain('9.2')
+    expect(document.body.textContent).toContain('Blue Oxford')
+    expect(document.body.textContent).toContain('A polished gallery look.')
+    expect(button('Wear again')).not.toBeNull()
+    expect(button('Delete')).not.toBeNull()
 
     await act(async () => button('Wear again').click())
     expect(onNavigate).toHaveBeenCalledWith('stylist', 'Gallery opening')

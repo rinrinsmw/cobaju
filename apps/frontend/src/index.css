@@ -81,6 +81,20 @@ body {
 .dot-2 { animation: dotPulse 1.3s 0.16s infinite; }
 .dot-3 { animation: dotPulse 1.3s 0.32s infinite; }
 
+@keyframes stylistShimmer {
+  0%, 100% { opacity: .25; }
+  50% { opacity: 1; }
+}
+.stylist-shimmer {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: #c9a96e;
+  animation: stylistShimmer 1.2s ease-in-out infinite;
+}
+
 /* Whering-style organic photo collage */
 .collage { position: relative; }
 
@@ -111,6 +125,11 @@ body {
   .page-content { padding: 30px 22px !important; }
   .filter-bar { padding: 12px 22px !important; top: 64px !important; }
   .two-column, .stylist-layout { grid-template-columns: 1fr !important; gap: 28px !important; }
+  .outfit-item-grid { grid-template-columns: 1fr 1fr !important; }
+}
+
+@media (max-width: 430px) {
+  .outfit-item-grid { grid-template-columns: 1fr !important; }
 }
 
 /* Nav blur */

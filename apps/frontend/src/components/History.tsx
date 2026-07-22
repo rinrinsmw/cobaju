@@ -123,11 +123,6 @@ export default function History({ onNavigate }: Props) {
                       ? look.items.map(item => <span key={item.item_id}>{item.available ? categoryEmoji[item.category ?? ''] || '✦' : '◌'}</span>)
                       : <span>✦</span>}
                   </div>
-                  <div style={{
-                    position: 'absolute', top: 14, right: 14,
-                    fontFamily: "'Playfair Display', serif", fontSize: 14, color: '#1a1816',
-                    background: '#f0ece4', padding: '5px 11px', borderRadius: 999,
-                  }}>{look.evaluation_score.toFixed(1)}</div>
                   <button onClick={() => onNavigate('stylist', look.original_request)} style={{
                     position: 'absolute', left: 18, bottom: 18,
                     fontFamily: 'DM Sans, sans-serif', fontSize: 12, fontWeight: 600,
