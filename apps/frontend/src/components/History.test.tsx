@@ -85,7 +85,8 @@ describe('Lookbook recommendation cards', () => {
 
     expect(document.body.textContent).not.toContain('9.2')
     expect(document.body.textContent).toContain('Blue Oxford')
-    expect(document.body.textContent).toContain('A polished gallery look.')
+    expect(document.body.textContent).not.toContain('A polished gallery look.')
+    expect(document.body.textContent).not.toContain('New look')
     expect(button('Wear again')).not.toBeNull()
     expect(button('Delete')).not.toBeNull()
 

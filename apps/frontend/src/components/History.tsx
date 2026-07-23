@@ -143,7 +143,7 @@ export default function History({ onNavigate }: Props) {
           letterSpacing: '0.16em', textTransform: 'uppercase',
           color: '#a09080', marginBottom: 16,
         }}>Lookbook</p>
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+        <div>
           <h1 style={{
             fontFamily: "'Playfair Display', serif",
             fontSize: 'clamp(36px, 5vw, 64px)',
@@ -152,15 +152,6 @@ export default function History({ onNavigate }: Props) {
             {loading ? 'Your outfits,' : `${looks.length} outfit${looks.length === 1 ? '' : 's'},`}<br />
             <em style={{ fontStyle: 'italic', color: '#c9a96e' }}>your history.</em>
           </h1>
-          <button onClick={() => onNavigate('stylist')} style={{
-            fontFamily: 'DM Sans, sans-serif', fontSize: 12, fontWeight: 600,
-            letterSpacing: '0.06em', textTransform: 'uppercase',
-            background: '#1a1816', color: '#f7f4ef',
-            border: 'none', borderRadius: 999, padding: '12px 28px', cursor: 'pointer',
-            marginBottom: 6,
-          }}>
-            New look →
-          </button>
         </div>
       </div>
 
@@ -237,9 +228,6 @@ export default function History({ onNavigate }: Props) {
                       </span>
                     ))}
                   </div>
-                  <p style={{ fontFamily: 'DM Sans, sans-serif', fontSize: 12, lineHeight: 1.5, color: '#6b6055' }}>
-                    {look.explanation}
-                  </p>
                 </div>
               </div>
             ))}
