@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiRequest, getToken } from '../api'
+import { apiRequest, fetchItemImage, getToken } from '../api'
 import type { Page } from '../data'
 
 interface Props { onNavigate: (page: Page, prefill?: string) => void }
@@ -26,6 +26,80 @@ interface RecommendationHistory {
 const categoryEmoji: Record<string, string> = {
   top: '👔', bottom: '👖', dress: '👗', outerwear: '🧥',
   shoes: '👞', bag: '👜', accessory: '⌚',
+}
+
+function LookbookItemPhoto({ item }: { item: HistoricalItem }) {
+  const image = useQuery({
+    queryKey: ['item-image', item.item_id],
+    queryFn: () => fetchItemImage(item.item_id),
+    enabled: item.available,
+    staleTime: Infinity,
+    retry: false,
+  })
+  const [imageUrl, setImageUrl] = useState('')
+  const [imageLoaded, setImageLoaded] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+  const [showFullImage, setShowFullImage] = useState(false)
+
+  useEffect(() => {
+    setImageLoaded(false)
+    setImageFailed(false)
+    setShowFullImage(false)
+    if (!image.data) {
+      setImageUrl('')
+      return
+    }
+
+    const objectUrl = URL.createObjectURL(image.data)
+    setImageUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [image.data, item.item_id])
+
+  const showImage = Boolean(imageUrl) && !imageFailed
+  const showSkeleton = item.available && !imageFailed && (image.isPending || (showImage && !imageLoaded))
+  const fallback = item.available ? categoryEmoji[item.category ?? ''] || '✦' : '◌'
+
+  return (
+    <div
+      onMouseEnter={() => setShowFullImage(true)}
+      onMouseLeave={() => setShowFullImage(false)}
+      title={showImage ? 'Hover to view the full image' : undefined}
+      style={{
+        position: 'relative', minWidth: 0, minHeight: 0,
+        overflow: 'hidden', borderRadius: 8, background: 'rgba(247,244,239,.72)',
+      }}
+    >
+      {showImage && (
+        <img
+          src={imageUrl}
+          alt={item.name ?? `${item.category ?? 'wardrobe'} item`}
+          onLoad={() => setImageLoaded(true)}
+          onError={() => setImageFailed(true)}
+          style={{
+            width: '100%', height: '100%', display: 'block',
+            objectFit: showFullImage ? 'contain' : 'cover',
+            opacity: imageLoaded ? 1 : 0,
+            background: showFullImage ? '#fff' : 'transparent',
+            transition: 'background-color .2s ease',
+          }}
+        />
+      )}
+      {showSkeleton && (
+        <span
+          className="wardrobe-image-skeleton"
+          aria-label={`Loading ${item.name ?? item.category ?? 'wardrobe item'} image`}
+        />
+      )}
+      {!showImage && !showSkeleton && (
+        <span
+          aria-label={`${item.name ?? item.category ?? 'Wardrobe item'} image unavailable`}
+          style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 44 }}
+        >
+          {fallback}
+        </span>
+      )}
+    </div>
+  )
 }
 
 function displayDate(value: string) {
@@ -118,10 +192,15 @@ export default function History({ onNavigate }: Props) {
                   background: 'linear-gradient(145deg, #ded5c8, #bcae9c)', position: 'relative',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                  <div style={{ display: 'flex', gap: 12, fontSize: 44, filter: 'drop-shadow(0 8px 12px rgba(0,0,0,0.12))' }}>
+                  <div style={{
+                    position: 'absolute', inset: 14, bottom: 62,
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(${Math.min(2, Math.max(1, look.items.length))}, minmax(0, 1fr))`,
+                    gridAutoRows: 'minmax(0, 1fr)', gap: 8,
+                  }}>
                     {look.items.length > 0
-                      ? look.items.map(item => <span key={item.item_id}>{item.available ? categoryEmoji[item.category ?? ''] || '✦' : '◌'}</span>)
-                      : <span>✦</span>}
+                      ? look.items.map(item => <LookbookItemPhoto key={item.item_id} item={item} />)
+                      : <span style={{ display: 'grid', placeItems: 'center', fontSize: 44 }}>✦</span>}
                   </div>
                   <button onClick={() => onNavigate('stylist', look.original_request)} style={{
                     position: 'absolute', left: 18, bottom: 18,

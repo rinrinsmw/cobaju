@@ -28,6 +28,15 @@ function button(label: string) {
   return match as HTMLButtonElement
 }
 
+async function waitForElement<T extends Element>(selector: string): Promise<T> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const element = document.querySelector<T>(selector)
+    if (element) return element
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)) })
+  }
+  throw new Error(`Element not found: ${selector}`)
+}
+
 describe('Lookbook recommendation cards', () => {
   let root: Root | undefined
 
@@ -47,6 +56,9 @@ describe('Lookbook recommendation cards', () => {
       if (path === '/api/recommendations' && (!options?.method || options.method === 'GET')) {
         return jsonResponse(deleted ? [] : [savedLook])
       }
+      if (path === '/api/wardrobe/items/10/image') {
+        return new Response('image bytes', { headers: { 'Content-Type': 'image/jpeg' } })
+      }
       if (path === '/api/recommendations/42' && options?.method === 'DELETE') {
         deleted = true
         return new Response(null, { status: 204 })
@@ -54,6 +66,12 @@ describe('Lookbook recommendation cards', () => {
       throw new Error(`Unexpected request: ${path}`)
     })
     vi.stubGlobal('fetch', fetchMock)
+    class TestURL extends URL {}
+    Object.defineProperties(TestURL, {
+      createObjectURL: { value: vi.fn(() => 'blob:blue-oxford') },
+      revokeObjectURL: { value: vi.fn() },
+    })
+    vi.stubGlobal('URL', TestURL)
     const onNavigate = vi.fn()
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const container = document.createElement('div')
@@ -70,6 +88,16 @@ describe('Lookbook recommendation cards', () => {
     expect(document.body.textContent).toContain('A polished gallery look.')
     expect(button('Wear again')).not.toBeNull()
     expect(button('Delete')).not.toBeNull()
+
+    const image = await waitForElement<HTMLImageElement>('img[alt="Blue Oxford"]')
+    expect(image.src).toContain('blob:blue-oxford')
+    expect(image.style.objectFit).toBe('cover')
+    expect(image.parentElement?.title).toBe('Hover to view the full image')
+
+    await act(async () => image.parentElement?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(image.style.objectFit).toBe('contain')
+    await act(async () => image.parentElement?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+    expect(image.style.objectFit).toBe('cover')
 
     await act(async () => button('Wear again').click())
     expect(onNavigate).toHaveBeenCalledWith('stylist', 'Gallery opening')
