@@ -19,7 +19,7 @@ from agents import (
     RunHooks,
     Runner,
 )
-from agents.exceptions import AgentsException
+from agents.exceptions import AgentsException, ModelBehaviorError
 from mcp import ClientSession
 
 from app.core.config import Settings
@@ -34,7 +34,7 @@ from app.observability import (
     start_model_attempt,
     start_tool_call,
 )
-from app.schemas.chat import StylistResponse
+from app.schemas.chat import RequiredCategory, StylistResponse
 from app.schemas.mcp import (
     GetStylingCandidatesOutput,
     SaveRecommendationOutput,
@@ -270,6 +270,17 @@ Use only candidate item IDs, categories, and facts in that bundle. The anchor
 item, when present, must be included. Never invent ownership or wardrobe facts.
 Plan the required categories for the request. If a required category is absent,
 add guidance beginning exactly "Not owned:". Return status="recommendation".
+
+Ground every factual phrase in message, required_categories reasons, and
+owned_items reasons in either the user's request or an explicit field from the
+wardrobe evidence. An item's name or category does not prove its comfort,
+warmth, fit, silhouette, fabric, texture, condition, quality, formality, or
+occasion suitability. Do not claim any such property unless the evidence states
+it. Do not add unsupported descriptive adjectives. When explaining a choice,
+cite supported details such as the exact item name, category, color, or supplied
+description, and frame styling advice as your recommendation (for example,
+"I'd pair..."). If the evidence cannot support a detail, omit it.
+
 Write like a warm, confident personal stylist speaking directly to the user.
 Make the message two or three concise, conversational sentences explaining why
 the selected pieces work together. Lead with the outfit instead of generic
@@ -284,7 +295,13 @@ Repair one rejected Cobaju recommendation using only the same cached MCP evidenc
 bundle. You have no tools. Correct every supplied violation. Never invent an ID,
 category, ownership claim, or item fact. Fill unavailable required categories
 with guidance beginning exactly "Not owned:". Return status="recommendation"
-without mentioning this repair process.
+without mentioning this repair process. Remove every unsupported claim named in
+the violations rather than paraphrasing or repeating it. Ground every factual
+phrase in the user's request or an explicit wardrobe-evidence field. An item's
+name or category alone does not support claims about comfort, warmth, fit,
+silhouette, fabric, texture, condition, quality, formality, or occasion
+suitability. Keep warmth in the conversational phrasing, not in invented item
+properties. If the evidence cannot support a detail, omit it.
 """.strip()
 
 
@@ -320,6 +337,95 @@ def _infer_candidate_request(message: str) -> tuple[list[ClothingCategory], int 
 
     anchor_match = re.search(r"(?:item|id)\s*#?\s*(\d+)", normalized)
     return categories, int(anchor_match.group(1)) if anchor_match else None
+
+
+def _join_phrases(values: list[str]) -> str:
+    """Join a short list in conversational prose."""
+
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
+def _ground_recommendation_prose(
+    response: StylistResponse,
+    available_items: list[ToolClothingItem],
+) -> StylistResponse:
+    """Rebuild free text from cached fields while preserving model selections."""
+
+    grounded = response.model_copy(deep=True)
+    evidence_by_id = {item.item_id: item for item in available_items}
+
+    # Structured-output models can occasionally omit the plan even after the
+    # one allowed repair. Reconstruct only an empty plan from categories the
+    # model already selected or explicitly marked missing. This keeps every
+    # required category covered while leaving strict validation unchanged.
+    if not grounded.required_categories:
+        planned_categories = dict.fromkeys(
+            [selected.category for selected in grounded.owned_items]
+            + [missing.category for missing in grounded.missing_categories]
+        )
+        grounded.required_categories = [
+            RequiredCategory(
+                category=category,
+                reason=f"I’d include a {category.value} in this outfit plan.",
+            )
+            for category in planned_categories
+        ]
+
+    selected_evidence = [
+        evidence_by_id[selected.item_id]
+        for selected in grounded.owned_items
+        if selected.item_id in evidence_by_id
+    ]
+
+    if selected_evidence:
+        featured_items = selected_evidence[:4]
+        names = _join_phrases([f'“{item.name}”' for item in featured_items])
+        details = _join_phrases(
+            [f"{item.color} {item.category.value}" for item in featured_items]
+        )
+        remaining_count = len(selected_evidence) - len(featured_items)
+        remainder = (
+            f", plus {remaining_count} more selected piece"
+            f"{'s' if remaining_count != 1 else ''}"
+            if remaining_count
+            else ""
+        )
+        grounded.message = (
+            f"For your request, I’d pair your {names}{remainder}. "
+            f"This plan uses your {details}."
+        )
+    else:
+        grounded.message = (
+            "For your request, I’d start with the missing categories below."
+        )
+
+    for required in grounded.required_categories:
+        required.reason = (
+            f"I’d include a {required.category.value} in this outfit plan."
+        )
+
+    for selected in grounded.owned_items:
+        evidence = evidence_by_id.get(selected.item_id)
+        if evidence is None:
+            selected.reason = (
+                f"I’d include this selected {selected.category.value} in the plan."
+            )
+            continue
+        selected.reason = (
+            f"I’d use your {evidence.color} {evidence.category.value}, "
+            f"“{evidence.name},” in this outfit plan."
+        )
+
+    for missing in grounded.missing_categories:
+        missing.guidance = (
+            f"Not owned: I’d add a {missing.category.value} to this outfit plan."
+        )
+
+    return StylistResponse.model_validate(grounded.model_dump())
 
 
 class _ModelAttemptHooks(RunHooks[None]):
@@ -388,6 +494,7 @@ class RequestScopedStylist:
                 temperature=self.owner.settings.stylist_temperature,
                 prompt_version=self.owner.settings.stylist_prompt_version,
             )
+        response = _ground_recommendation_prose(response, bundle.candidate_items)
         return StylistRunOutcome(
             response=response,
             tool_names=list(self.tool_names),
@@ -407,7 +514,7 @@ class RequestScopedStylist:
         if self.cached_candidates is None:
             raise StylistAgentError("Stylist repair has no cached MCP evidence")
         self.metrics.cache_reused_during_repair = True
-        return await self.owner._generate(
+        repaired = await self.owner._generate(
             instructions=_REPAIR_INSTRUCTIONS,
             model_input={
                 "user_request": message,
@@ -418,6 +525,9 @@ class RequestScopedStylist:
             stage="stylist_repair_model",
             temperature=self.owner.settings.stylist_repair_temperature,
             prompt_version=self.owner.settings.stylist_repair_prompt_version,
+        )
+        return _ground_recommendation_prose(
+            repaired, self.cached_candidates.candidate_items
         )
 
     async def save_recommendation(
@@ -551,7 +661,6 @@ class OpenAIAgentsStylistRunner:
             timeout=self.settings.openrouter_timeout_seconds,
         )
         model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
-        hooks = _ModelAttemptHooks(stage)
         agent = Agent(
             name="Wardrobe Stylist" if stage == "stylist_model" else "Stylist Repairer",
             instructions=instructions,
@@ -560,17 +669,29 @@ class OpenAIAgentsStylistRunner:
             output_type=StylistResponse,
         )
         try:
-            result = await Runner.run(
-                agent,
-                json.dumps(model_input),
-                max_turns=2,
-                hooks=hooks,
-                run_config=RunConfig(
-                    tracing_disabled=True,
-                    workflow_name=stage,
-                    trace_include_sensitive_data=False,
-                ),
-            )
+            for attempt in range(2):
+                hooks = _ModelAttemptHooks(stage)
+                try:
+                    result = await Runner.run(
+                        agent,
+                        json.dumps(model_input),
+                        max_turns=2,
+                        hooks=hooks,
+                        run_config=RunConfig(
+                            tracing_disabled=True,
+                            workflow_name=stage,
+                            trace_include_sensitive_data=False,
+                        ),
+                    )
+                    break
+                except ModelBehaviorError as error:
+                    hooks.close(error)
+                    if attempt == 0:
+                        logger.warning(
+                            "Stylist returned malformed structured output; retrying once"
+                        )
+                        continue
+                    raise
             if self.observability is not None:
                 self.observability.update_current(
                     usage_details=agent_usage_details(result),
@@ -580,7 +701,6 @@ class OpenAIAgentsStylistRunner:
                 raise StylistAgentError("Stylist returned an invalid response")
             return result.final_output
         except StylistAgentError as error:
-            hooks.close(error)
             raise
         except AgentsException as error:
             hooks.close(error)

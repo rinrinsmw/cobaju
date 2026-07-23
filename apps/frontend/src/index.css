@@ -95,6 +95,24 @@ body {
   animation: stylistShimmer 1.2s ease-in-out infinite;
 }
 
+@keyframes wardrobeImageSkeleton {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.wardrobe-image-skeleton {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #e9e2d8;
+}
+.wardrobe-image-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.62), transparent);
+  animation: wardrobeImageSkeleton 1.15s ease-in-out infinite;
+}
+
 /* Whering-style organic photo collage */
 .collage { position: relative; }
 

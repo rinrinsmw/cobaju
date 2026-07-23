@@ -29,7 +29,27 @@ def save_completed_recommendation(
 ) -> Recommendation:
     """Persist one final recommendation after rechecking every selected ID."""
 
-    item_ids = [item.item_id for item in response.owned_items]
+    return save_completed_recommendation_values(
+        session,
+        user_id=user_id,
+        original_request=original_request,
+        item_ids=[item.item_id for item in response.owned_items],
+        explanation=response.message,
+        evaluation_score=evaluation_score,
+    )
+
+
+def save_completed_recommendation_values(
+    session: Session,
+    *,
+    user_id: int,
+    original_request: str,
+    item_ids: list[int],
+    explanation: str,
+    evaluation_score: float,
+) -> Recommendation:
+    """Persist signed recommendation values after rechecking item ownership."""
+
     if item_ids:
         statement = select(ClothingItem.id).where(
             ClothingItem.user_id == user_id,
@@ -44,7 +64,7 @@ def save_completed_recommendation(
         user_id=user_id,
         original_request=original_request,
         selected_item_ids=item_ids,
-        explanation=response.message,
+        explanation=explanation,
         evaluation_score=evaluation_score,
     )
     session.add(recommendation)

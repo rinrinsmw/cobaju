@@ -1,12 +1,10 @@
-"""Guard, retrieve once through MCP, generate, validate, repair, and persist."""
+"""Guard, retrieve once through MCP, generate, validate, and prepare optional saving."""
 
-import time
 from collections import Counter
 from contextlib import nullcontext
 
-from sqlmodel import Session
-
 from app.core.config import Settings
+from app.core.security import create_recommendation_save_token
 from app.models.clothing_item import ClothingItem
 from app.models.user import User
 from app.observability import (
@@ -16,8 +14,14 @@ from app.observability import (
     get_observability,
     record_recommendation_diagnostics,
     set_failing_stage,
+    structured_log,
 )
-from app.schemas.chat import ChatScopeDecision, OutfitEvaluation, StylistResponse
+from app.schemas.chat import (
+    ChatScopeDecision,
+    OutfitEvaluation,
+    StylistApiResponse,
+    StylistResponse,
+)
 from app.services.chat_guardrails import ChatScopeClassifier, contains_prompt_injection
 from app.services.outfit_evaluator import (
     OutfitEvaluator,
@@ -59,11 +63,10 @@ async def create_stylist_response(
     classifier: ChatScopeClassifier,
     runner: StylistRunner,
     evaluator: OutfitEvaluator,
-    session: Session,
     settings: Settings,
     observability: Observability | None = None,
 ) -> StylistResponse:
-    """Return a deterministically valid recommendation after MCP persistence."""
+    """Return a deterministically valid recommendation without persisting it."""
 
     telemetry = observability or get_observability()
     request_context = current_request_context()
@@ -97,13 +100,18 @@ async def create_stylist_response(
             return _blocked_response(decision)
 
         # The session context encloses generation, optional repair, final
-        # validation, and MCP persistence. It is entered exactly once.
+        # validation. It is entered exactly once.
         async with runner.open_request(current_user) as stylist_request:
             set_failing_stage("stylist.generate")
             outcome = await stylist_request.run(message)
+            structured_log(
+                "stylist_initial_recommendation",
+                recommendation=_recommendation_log_payload(outcome.response),
+            )
 
             tool_counts = Counter(outcome.tool_invocation_counts)
             last_hallucination_detected = False
+            last_validation_result: dict[str, object] = {}
 
             for attempt in range(2):
                 evidence = _cached_item_evidence(outcome, current_user)
@@ -168,6 +176,27 @@ async def create_stylist_response(
                             request_observation, evaluation, quality.explanation_present
                         )
 
+                last_validation_result = {
+                    "accepted": not violations,
+                    "grounding_violations": grounding_violations,
+                    "deterministic_violations": deterministic.violations,
+                    "evaluator_violations": (
+                        _evaluator_failure_codes(evaluation) if evaluation else []
+                    ),
+                    "blocking_evaluator_violations": (
+                        _blocking_evaluator_failure_codes(evaluation)
+                        if evaluation
+                        else []
+                    ),
+                    "evaluator_result": (
+                        evaluation.model_dump(mode="json") if evaluation else None
+                    ),
+                    "final_blocking_violations": violations,
+                    "evidence_item_ids": [
+                        item.id for item in evidence if item.id is not None
+                    ],
+                }
+
                 last_hallucination_detected = bool(
                     deterministic.violations
                     or grounding_violations
@@ -183,33 +212,6 @@ async def create_stylist_response(
                             "Authenticated user has no persisted ID"
                         )
 
-                    # MCP sees the final candidate only after deterministic
-                    # validation (plus unsupported-claim checking) passes. Its
-                    # ownership result must exactly match the response.
-                    set_failing_stage("mcp.save_recommendation")
-                    # Authentication opened a read transaction on the parent
-                    # SQLite connection. Release it before the MCP child writes
-                    # so the single persistence call cannot deadlock on that
-                    # otherwise-idle reader.
-                    session.rollback()
-                    persistence_started = time.perf_counter()
-                    accepted = await stylist_request.save_recommendation(
-                        message,
-                        outcome.response,
-                        evaluation.evaluation_score,
-                    )
-                    selected_ids = {
-                        item.item_id for item in outcome.response.owned_items
-                    }
-                    accepted_ids = {item.item_id for item in accepted.items}
-                    if selected_ids != accepted_ids:
-                        raise RecommendationValidationError(
-                            "MCP persistence validation changed selected item IDs"
-                        )
-                    stylist_request.metrics.persistence_duration_ms = round(
-                        (time.perf_counter() - persistence_started) * 1000, 2
-                    )
-                    tool_counts["save_recommendation"] += 1
                     record_recommendation_diagnostics(
                         tool_call_count=sum(tool_counts.values())
                     )
@@ -251,9 +253,31 @@ async def create_stylist_response(
                             **metrics,
                         },
                     ):
-                        return outcome.response
+                        return StylistApiResponse(
+                            **outcome.response.model_dump(),
+                            lookbook_save_token=create_recommendation_save_token(
+                                user_id=current_user.id,
+                                user_request=message,
+                                item_ids=[
+                                    item.item_id
+                                    for item in outcome.response.owned_items
+                                ],
+                                explanation=outcome.response.message,
+                                evaluation_score=evaluation.evaluation_score,
+                            ),
+                        )
 
                 if attempt == 0:
+                    repair_violations = list(violations)
+                    if evaluation is not None and evaluation.unsupported_claims:
+                        repair_violations.extend(
+                            f"UNSUPPORTED_CLAIM: {claim}"
+                            for claim in evaluation.unsupported_claims
+                        )
+                        if evaluation.feedback:
+                            repair_violations.append(
+                                f"EVALUATOR_FEEDBACK: {evaluation.feedback}"
+                            )
                     with telemetry.observe(
                         "recommendation.repair",
                         as_type="generation",
@@ -272,8 +296,12 @@ async def create_stylist_response(
                     ):
                         set_failing_stage("recommendation.repair")
                         repaired = await stylist_request.repair(
-                            message, outcome.response, violations
+                            message, outcome.response, repair_violations
                         )
+                    structured_log(
+                        "stylist_repaired_recommendation",
+                        recommendation=_recommendation_log_payload(repaired),
+                    )
                     outcome.response = repaired
 
             if request_observation is not None:
@@ -282,9 +310,20 @@ async def create_stylist_response(
                     value="true" if last_hallucination_detected else "false",
                 )
                 request_observation.update(output=stylist_request.metrics.as_dict())
+            structured_log(
+                "stylist_recommendation_validation_failed",
+                recommendation=_recommendation_log_payload(outcome.response),
+                validation=last_validation_result,
+            )
             raise RecommendationValidationError(
                 "Recommendation remained invalid after one targeted repair"
             )
+
+
+def _recommendation_log_payload(response: StylistResponse) -> dict[str, object]:
+    """Return the complete schema-bounded candidate for validation diagnostics."""
+
+    return response.model_dump(mode="json")
 
 
 def _cached_item_evidence(

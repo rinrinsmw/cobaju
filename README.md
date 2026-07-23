@@ -333,9 +333,10 @@ reuses the same session cache and never lists tools, retrieves, or calls
 
 ## Recommendation history
 
-Every accepted chat recommendation is saved with the original request, selected
-item IDs, final explanation, evaluator score, and completion timestamp. List
-the authenticated user's newest records first:
+Every accepted chat recommendation is saved with the conversation's initial
+styling theme (rather than a later refinement prompt), selected item IDs, final
+explanation, evaluator score, and completion timestamp. List the authenticated
+user's newest records first:
 
 ```bash
 curl http://127.0.0.1:8000/recommendations \

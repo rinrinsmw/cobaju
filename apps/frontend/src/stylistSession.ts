@@ -9,6 +9,7 @@ export interface ChatMessage {
 export interface StylistSession {
   version: 1
   messages: ChatMessage[]
+  conversationTheme?: string
   updatedAt: string
 }
 
@@ -54,6 +55,7 @@ function isStylistSession(value: unknown): value is StylistSession {
   return session.version === 1
     && Array.isArray(session.messages)
     && session.messages.every(isChatMessage)
+    && (session.conversationTheme === undefined || typeof session.conversationTheme === 'string')
     && typeof session.updatedAt === 'string'
 }
 
@@ -83,10 +85,16 @@ export function loadStylistSession(userId: number, now = Date.now()): StylistSes
   }
 }
 
-export function saveStylistSession(userId: number, messages: ChatMessage[], now = Date.now()) {
+export function saveStylistSession(
+  userId: number,
+  messages: ChatMessage[],
+  now = Date.now(),
+  conversationTheme?: string,
+) {
   const session: StylistSession = {
     version: 1,
     messages,
+    ...(conversationTheme ? { conversationTheme } : {}),
     updatedAt: new Date(now).toISOString(),
   }
 

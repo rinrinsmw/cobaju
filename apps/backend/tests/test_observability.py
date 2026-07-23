@@ -321,8 +321,7 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
                     classifier=AllowedClassifier(),
                     runner=ObservedRunner(observability),
                     evaluator=PassingEvaluator(),
-                    session=session,
-                    settings=_settings(),
+                        settings=_settings(),
                     observability=observability,
                 )
 
@@ -335,7 +334,6 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
         "stylist.generate",
         "recommendation.validate",
         "evaluator",
-        "mcp.save_recommendation",
         "response_formatting",
     ]
     agent = next(record for record in backend.records if record["name"] == "stylist.generate")
@@ -343,10 +341,9 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
     formatting = backend.records[-1]["output"]
     assert formatting["tool_invocation_counts"] == {
         "get_styling_candidates": 1,
-        "save_recommendation": 1,
     }
     assert formatting["mcp_session_count"] == 1
-    assert formatting["tool_call_count"] == 2
+    assert formatting["tool_call_count"] == 1
     assert formatting["candidate_count"] == 1
     root = backend.records[0]
     assert root["scores"][0]["name"] == "recommendation_quality"
@@ -386,7 +383,6 @@ def test_low_subjective_scores_are_recorded_without_blocking_response() -> None:
                     classifier=AllowedClassifier(),
                     runner=ObservedRunner(observability),
                     evaluator=LowSubjectiveEvaluator(),
-                    session=session,
                     settings=_settings(),
                     observability=observability,
                 )

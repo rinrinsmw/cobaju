@@ -17,10 +17,10 @@ class ChatRequest(BaseModel):
     @field_validator("message")
     @classmethod
     def normalize_message(cls, value: str) -> str:
-        message = value.strip()
-        if not message:
+        normalized = value.strip()
+        if not normalized:
             raise ValueError("message must not be blank")
-        return message
+        return normalized
 
 
 class ChatScopeDecision(BaseModel):
@@ -80,6 +80,12 @@ class StylistResponse(BaseModel):
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("owned item IDs must be unique")
         return value
+
+
+class StylistApiResponse(StylistResponse):
+    """A validated stylist response with an opaque receipt for optional saving."""
+
+    lookbook_save_token: str | None = None
 
 
 class OutfitEvaluation(BaseModel):

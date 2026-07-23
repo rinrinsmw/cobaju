@@ -45,10 +45,24 @@ function button(label: string) {
   return match as HTMLButtonElement
 }
 
+async function waitForElement<T extends Element>(selector: string): Promise<T> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const element = document.querySelector<T>(selector)
+    if (element) return element
+    await act(
+      async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+    )
+  }
+  throw new Error(`Element not found: ${selector}`)
+}
+
 describe("Stylist session UI", () => {
   let root: Root | undefined
 
-  beforeEach(() => window.sessionStorage.clear())
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+  })
 
   afterEach(async () => {
     if (root) await act(async () => root?.unmount())
@@ -165,6 +179,218 @@ describe("Stylist session UI", () => {
     )
   })
 
+  it("saves a recommendation only after Save to Lookbook is clicked", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, options?: RequestInit) => {
+        const path = String(input)
+        if (path === "/api/wardrobe/items") return jsonResponse([])
+        if (
+          path === "/api/chat/recommendations" &&
+          options?.method === "POST"
+        ) {
+          return jsonResponse({
+            status: "recommendation",
+            message: "Wear your blue shirt.",
+            owned_items: [],
+            missing_categories: [],
+            lookbook_save_token: "signed-save-receipt",
+          })
+        }
+        if (path === "/api/recommendations" && options?.method === "POST") {
+          return jsonResponse({ id: 42 })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      },
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Stylist />
+        </QueryClientProvider>,
+      )
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    await act(async () => button("💼 Work").click())
+    await act(
+      async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+    )
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([path, options]) =>
+          String(path) === "/api/recommendations" &&
+          (options as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toHaveLength(0)
+
+    await act(async () => button("Save to Lookbook").click())
+    await act(
+      async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/recommendations",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          save_token: "signed-save-receipt",
+          display_title: "Work",
+        }),
+      }),
+    )
+    expect(document.body.textContent).toContain("Saved to Lookbook")
+  })
+
+  it("renders cached wardrobe images and falls back to the category emoji", async () => {
+    window.localStorage.setItem("access_token", "valid-token")
+    let resolveImage: ((response: Response) => void) | undefined
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, options?: RequestInit) => {
+        const path = String(input)
+        if (path === "/api/wardrobe/items") {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: 1,
+                name: "Blue shirt",
+                category: "top",
+                color: "blue",
+                description: null,
+                original_image_path: "7/blue-shirt.jpg",
+                analysis_completed: true,
+                processing_status: "completed",
+              },
+              {
+                id: 2,
+                name: "Black trousers",
+                category: "bottom",
+                color: "black",
+                description: null,
+                original_image_path: null,
+                analysis_completed: true,
+                processing_status: "completed",
+              },
+            ]),
+          )
+        }
+        if (
+          path === "/api/chat/recommendations" &&
+          options?.method === "POST"
+        ) {
+          return Promise.resolve(
+            jsonResponse({
+              status: "recommendation",
+              message: "Wear your blue shirt with black trousers.",
+              owned_items: [
+                { item_id: 1, category: "top", reason: "Polished base" },
+                { item_id: 2, category: "bottom", reason: "Smart contrast" },
+              ],
+              missing_categories: [],
+            }),
+          )
+        }
+        if (path === "/api/wardrobe/items/1/image") {
+          return new Promise<Response>((resolve) => {
+            resolveImage = resolve
+          })
+        }
+        throw new Error(`Unexpected request: ${path}`)
+      },
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const createObjectURL = vi.fn(() => "blob:blue-shirt")
+    class TestURL extends URL {}
+    Object.defineProperties(TestURL, {
+      createObjectURL: { value: createObjectURL },
+      revokeObjectURL: { value: vi.fn() },
+    })
+    vi.stubGlobal("URL", TestURL)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Stylist />
+        </QueryClientProvider>,
+      )
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    await act(async () => {
+      button("💼 Work").click()
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    expect(
+      document.querySelector('[aria-label="Loading Blue shirt image"]'),
+    ).not.toBeNull()
+    expect(
+      document.querySelector(
+        '[aria-label="Black trousers image unavailable"]',
+      )?.textContent,
+    ).toBe("👖")
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) => String(input) === "/api/wardrobe/items",
+      ),
+    ).toHaveLength(1)
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) => String(input) === "/api/wardrobe/items/1/image",
+      ),
+    ).toHaveLength(1)
+
+    await act(async () => {
+      resolveImage?.(
+        new Response("image bytes", {
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      )
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    const image = await waitForElement<HTMLImageElement>(
+      'img[alt="Blue shirt"]',
+    )
+    expect(image.src).toContain("blob:blue-shirt")
+    expect(image.style.objectFit).toBe("cover")
+    expect(image.parentElement?.style.borderRadius).toBe("8px")
+    expect(image.parentElement?.title).toBe("Hover to view the full image")
+
+    await act(async () =>
+      image.parentElement?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      ),
+    )
+    expect(image.style.objectFit).toBe("contain")
+
+    await act(async () =>
+      image.parentElement?.dispatchEvent(
+        new MouseEvent("mouseout", { bubbles: true }),
+      ),
+    )
+    expect(image.style.objectFit).toBe("cover")
+
+    await act(async () => image?.dispatchEvent(new Event("error")))
+    expect(
+      document.querySelector('[aria-label="Blue shirt image unavailable"]')
+        ?.textContent,
+    ).toBe("👔")
+    expect(document.querySelector('img[alt="Blue shirt"]')).toBeNull()
+  })
+
   it("submits a welcome chip through the existing chat request", async () => {
     let resolveChat: ((response: Response) => void) | undefined
     const fetchMock = vi.fn(
@@ -230,7 +456,7 @@ describe("Stylist session UI", () => {
   })
 
   it("groups selected pieces and sends one follow-up request without clearing history", async () => {
-    const requests: string[] = []
+    const requests: Array<{ message: string }> = []
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, options?: RequestInit) => {
         const path = String(input)
@@ -281,8 +507,8 @@ describe("Stylist session UI", () => {
           path === "/api/chat/recommendations" &&
           options?.method === "POST"
         ) {
-          const message = JSON.parse(String(options.body)).message as string
-          requests.push(message)
+          const request = JSON.parse(String(options.body)) as { message: string }
+          requests.push(request)
           return jsonResponse({
             status: "recommendation",
             message:
@@ -350,8 +576,8 @@ describe("Stylist session UI", () => {
     })
 
     expect(requests).toEqual([
-      "Choose a fun, polished outfit for a party.",
-      "Make the previous recommendation more casual.",
+      { message: "Choose a fun, polished outfit for a party." },
+      { message: "Make the previous recommendation more casual." },
     ])
     expect(document.body.textContent).toContain(
       "Choose a fun, polished outfit for a party.",

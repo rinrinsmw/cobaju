@@ -104,3 +104,53 @@ def validate_upload_analysis_token(
         )
     except (InvalidTokenError, TypeError, ValueError):
         return False
+
+
+def create_recommendation_save_token(
+    *,
+    user_id: int,
+    user_request: str,
+    item_ids: list[int],
+    explanation: str,
+    evaluation_score: float,
+) -> str:
+    """Sign the evaluated recommendation so the client cannot alter it before saving."""
+
+    settings = get_settings()
+    secret = settings.jwt_secret_key.get_secret_value()
+    if not secret:
+        raise RuntimeError("JWT_SECRET_KEY must be configured")
+
+    expires_at = datetime.now(UTC) + timedelta(
+        minutes=settings.jwt_access_token_expire_minutes
+    )
+    payload = {
+        "sub": str(user_id),
+        "purpose": "recommendation_save",
+        "user_request": user_request,
+        "item_ids": item_ids,
+        "explanation": explanation,
+        "evaluation_score": evaluation_score,
+        "exp": expires_at,
+    }
+    return jwt.encode(payload, secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_recommendation_save_token(token: str, user_id: int) -> dict | None:
+    """Return trusted recommendation claims for this user, or None if invalid."""
+
+    settings = get_settings()
+    secret = settings.jwt_secret_key.get_secret_value()
+    if not secret:
+        raise RuntimeError("JWT_SECRET_KEY must be configured")
+
+    try:
+        payload = jwt.decode(token, secret, algorithms=[settings.jwt_algorithm])
+        if (
+            payload.get("purpose") != "recommendation_save"
+            or int(payload.get("sub")) != user_id
+        ):
+            return None
+        return payload
+    except (InvalidTokenError, TypeError, ValueError):
+        return None

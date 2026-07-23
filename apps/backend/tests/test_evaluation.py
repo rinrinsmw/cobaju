@@ -31,7 +31,13 @@ from app.services.outfit_evaluator import (
     get_owned_item_evidence,
     validate_recommendation,
 )
-from app.services.stylist_agent import StylistLifecycleMetrics, StylistRunOutcome
+from app.services.stylist_agent import (
+    _REPAIR_INSTRUCTIONS,
+    _STYLIST_INSTRUCTIONS,
+    _ground_recommendation_prose,
+    StylistLifecycleMetrics,
+    StylistRunOutcome,
+)
 
 
 class AllowedClassifier:
@@ -174,6 +180,52 @@ def outcome(response: StylistResponse) -> StylistRunOutcome:
     )
 
 
+def test_stylist_prompts_require_evidence_grounded_prose() -> None:
+    assert "Ground every factual phrase" in _STYLIST_INSTRUCTIONS
+    assert "does not prove its comfort" in _STYLIST_INSTRUCTIONS
+    assert "If the evidence cannot support a detail, omit it" in _STYLIST_INSTRUCTIONS
+    assert "Remove every unsupported claim named" in _REPAIR_INSTRUCTIONS
+    assert "Keep warmth in the conversational phrasing" in _REPAIR_INSTRUCTIONS
+
+
+def test_stylist_free_text_is_rebuilt_from_cached_item_evidence() -> None:
+    ungrounded = candidate(10)
+    ungrounded.message = "This wrinkle-proof shirt keeps you comfortable."
+    ungrounded.required_categories = []
+    ungrounded.owned_items[0].reason = "Its silk fabric has a flattering fit."
+    ungrounded.missing_categories = [
+        MissingCategoryGuidance(
+            category=ClothingCategory.BOTTOM,
+            guidance="Not owned: add warm trousers.",
+        )
+    ]
+
+    grounded = _ground_recommendation_prose(
+        ungrounded, outcome(ungrounded).available_items
+    )
+
+    assert grounded.message == (
+        "For your request, I’d pair your “Blue shirt”. "
+        "This plan uses your blue top."
+    )
+    assert [required.category for required in grounded.required_categories] == [
+        ClothingCategory.TOP,
+        ClothingCategory.BOTTOM,
+    ]
+    assert [required.reason for required in grounded.required_categories] == [
+        "I’d include a top in this outfit plan.",
+        "I’d include a bottom in this outfit plan.",
+    ]
+    assert grounded.owned_items[0].reason == (
+        "I’d use your blue top, “Blue shirt,” in this outfit plan."
+    )
+    assert grounded.missing_categories[0].guidance == (
+        "Not owned: I’d add a bottom to this outfit plan."
+    )
+    assert "comfortable" not in grounded.model_dump_json()
+    assert "silk" not in grounded.model_dump_json()
+
+
 @pytest.fixture
 def evaluation_session() -> Session:
     engine = create_engine(
@@ -293,8 +345,7 @@ def test_verified_unsupported_claim_triggers_one_successful_targeted_repair(
             classifier=AllowedClassifier(),
             runner=runner,
             evaluator=evaluator,
-            session=evaluation_session,
-            settings=Settings(
+                settings=Settings(
                 openrouter_stylist_model="stylist-model",
                 openrouter_evaluator_model="evaluator-model",
             ),
@@ -302,11 +353,18 @@ def test_verified_unsupported_claim_triggers_one_successful_targeted_repair(
 
     result = anyio.run(run)
 
-    assert result == response
+    assert result.model_dump(exclude={"lookbook_save_token"}) == response.model_dump()
+    assert result.lookbook_save_token
     assert evaluator.calls == 2
     assert runner.run_calls == 1
     assert runner.feedback[0] is None
     assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
+    assert "UNSUPPORTED_CLAIM: The shirt is wrinkle-proof." in (
+        runner.feedback[1] or ""
+    )
+    assert "EVALUATOR_FEEDBACK: Remove the unsupported fabric claim." in (
+        runner.feedback[1] or ""
+    )
 
 
 def test_deterministic_rejection_repairs_before_calling_evaluator(
@@ -338,8 +396,7 @@ def test_deterministic_rejection_repairs_before_calling_evaluator(
             classifier=AllowedClassifier(),
             runner=runner,
             evaluator=evaluator,
-            session=evaluation_session,
-            settings=Settings(
+                settings=Settings(
                 openrouter_stylist_model="stylist-model",
                 openrouter_evaluator_model="evaluator-model",
             ),
@@ -347,13 +404,17 @@ def test_deterministic_rejection_repairs_before_calling_evaluator(
 
     result = anyio.run(run)
 
-    assert result == repaired
+    assert result.model_dump(exclude={"lookbook_save_token"}) == repaired.model_dump()
+    assert result.lookbook_save_token
     assert runner.run_calls == 1
     assert evaluator.calls == 1
     assert "must have an owned item" in (runner.feedback[1] or "")
 
 
-def test_stylist_repairs_no_more_than_once(evaluation_session: Session) -> None:
+def test_stylist_repairs_no_more_than_once(
+    evaluation_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     response = candidate(10)
     runner = SequencedRunner([outcome(response), outcome(response)])
     evaluator = SequencedEvaluator(
@@ -361,6 +422,11 @@ def test_stylist_repairs_no_more_than_once(evaluation_session: Session) -> None:
             evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
             evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
         ]
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "app.services.chat.structured_log",
+        lambda event, **fields: events.append((event, fields)),
     )
 
     async def run() -> None:
@@ -372,7 +438,6 @@ def test_stylist_repairs_no_more_than_once(evaluation_session: Session) -> None:
             classifier=AllowedClassifier(),
             runner=runner,
             evaluator=evaluator,
-            session=evaluation_session,
             settings=Settings(
                 openrouter_stylist_model="stylist-model",
                 openrouter_evaluator_model="evaluator-model",
@@ -387,3 +452,16 @@ def test_stylist_repairs_no_more_than_once(evaluation_session: Session) -> None:
     assert len(runner.feedback) == 2
     assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
     assert runner.save_calls == 0
+    failed_event = next(
+        fields
+        for event, fields in events
+        if event == "stylist_recommendation_validation_failed"
+    )
+    validation = failed_event["validation"]
+    assert isinstance(validation, dict)
+    assert validation["blocking_evaluator_violations"] == [
+        "EVALUATOR_UNSUPPORTED_CLAIMS"
+    ]
+    assert validation["final_blocking_violations"] == [
+        "EVALUATOR_UNSUPPORTED_CLAIMS"
+    ]

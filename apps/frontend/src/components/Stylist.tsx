@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   apiRequest,
+  fetchItemImage,
   type ClothingCategory,
   type ClothingItem,
   type StylistResponse,
@@ -19,20 +20,35 @@ interface Props {
 }
 
 const quickPrompts = [
-  { label: "💼 Work", prompt: "Help me choose a polished outfit for work." },
+  {
+    label: "💼 Work",
+    prompt: "Help me choose a polished outfit for work.",
+    theme: "Work",
+  },
   {
     label: "❤️ First Date",
     prompt: "Style me for a first date that feels confident and effortless.",
+    theme: "First Date",
   },
-  { label: "☕ Coffee", prompt: "Put together a relaxed outfit for coffee." },
-  { label: "🎉 Party", prompt: "Choose a fun, polished outfit for a party." },
+  {
+    label: "☕ Coffee",
+    prompt: "Put together a relaxed outfit for coffee.",
+    theme: "Coffee",
+  },
+  {
+    label: "🎉 Party",
+    prompt: "Choose a fun, polished outfit for a party.",
+    theme: "Party",
+  },
   {
     label: "✈️ Travel",
     prompt: "Build me a comfortable, stylish travel outfit.",
+    theme: "Travel",
   },
   {
     label: "🎓 Graduation",
     prompt: "Help me dress for a graduation celebration.",
+    theme: "Graduation",
   },
 ]
 
@@ -70,6 +86,104 @@ const emoji: Record<ClothingCategory, string> = {
 
 type RecommendedItem = StylistResponse["owned_items"][number]
 
+function WardrobeItemPhoto({
+  item,
+  category,
+  subtle,
+}: {
+  item: ClothingItem | undefined
+  category: ClothingCategory
+  subtle: boolean
+}) {
+  const hasStoredImage = Boolean(item?.original_image_path)
+  const image = useQuery({
+    queryKey: ["item-image", item?.id],
+    queryFn: () => fetchItemImage(item!.id),
+    enabled: hasStoredImage,
+    staleTime: Infinity,
+    retry: false,
+  })
+  const [imageUrl, setImageUrl] = useState("")
+  const [imageLoaded, setImageLoaded] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+  const [showFullImage, setShowFullImage] = useState(false)
+
+  useEffect(() => {
+    setImageLoaded(false)
+    setImageFailed(false)
+    setShowFullImage(false)
+    if (!image.data) {
+      setImageUrl("")
+      return
+    }
+
+    const objectUrl = URL.createObjectURL(image.data)
+    setImageUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [image.data, item?.id])
+
+  const showImage = Boolean(imageUrl) && !imageFailed
+  const showSkeleton =
+    hasStoredImage &&
+    !imageFailed &&
+    (image.isPending || (showImage && !imageLoaded))
+
+  return (
+    <div
+      onMouseEnter={() => setShowFullImage(true)}
+      onMouseLeave={() => setShowFullImage(false)}
+      title={showImage ? "Hover to view the full image" : undefined}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: subtle ? 92 : 112,
+        overflow: "hidden",
+        borderRadius: 8,
+        background: "#e9e2d8",
+        marginBottom: 10,
+      }}
+    >
+      {showImage && (
+        <img
+          src={imageUrl}
+          alt={item?.name ?? `${category} wardrobe item`}
+          onLoad={() => setImageLoaded(true)}
+          onError={() => setImageFailed(true)}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: showFullImage ? "contain" : "cover",
+            display: "block",
+            opacity: imageLoaded ? 1 : 0,
+            background: showFullImage ? "#fff" : "transparent",
+            transition: "background-color .2s ease",
+          }}
+        />
+      )}
+      {showSkeleton && (
+        <span
+          className="wardrobe-image-skeleton"
+          aria-label={`Loading ${item?.name ?? category} image`}
+        />
+      )}
+      {!showImage && !showSkeleton && (
+        <span
+          aria-label={`${item?.name ?? category} image unavailable`}
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "grid",
+            placeItems: "center",
+            fontSize: subtle ? 25 : 31,
+          }}
+        >
+          {emoji[category]}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function conciseExplanation(message: string) {
   return message
     .trim()
@@ -87,7 +201,7 @@ function Welcome({
   onSelect,
 }: {
   disabled: boolean
-  onSelect: (prompt: string) => void
+  onSelect: (prompt: string, theme: string) => void
 }) {
   return (
     <section style={welcomeCard}>
@@ -136,7 +250,7 @@ function Welcome({
           <button
             key={item.label}
             type="button"
-            onClick={() => onSelect(item.prompt)}
+            onClick={() => onSelect(item.prompt, item.theme)}
             disabled={disabled}
             style={chipButton}
           >
@@ -151,12 +265,12 @@ function Welcome({
 function OutfitGroup({
   title,
   items,
-  itemName,
+  wardrobeItem,
   subtle = false,
 }: {
   title: string
   items: RecommendedItem[]
-  itemName: (id: number) => string
+  wardrobeItem: (id: number) => ClothingItem | undefined
   subtle?: boolean
 }) {
   if (items.length === 0) return null
@@ -192,16 +306,15 @@ function OutfitGroup({
               textAlign: "center",
             }}
           >
-            <div
-              aria-hidden="true"
-              style={{ fontSize: subtle ? 25 : 31, marginBottom: 8 }}
-            >
-              {emoji[item.category]}
-            </div>
+            <WardrobeItemPhoto
+              item={wardrobeItem(item.item_id)}
+              category={item.category}
+              subtle={subtle}
+            />
             <strong
               style={{ display: "block", fontSize: 13, lineHeight: 1.35 }}
             >
-              {itemName(item.item_id)}
+              {wardrobeItem(item.item_id)?.name ?? "Wardrobe piece"}
             </strong>
             <span
               style={{
@@ -223,15 +336,34 @@ function OutfitGroup({
 
 function RecommendationCard({
   response,
-  itemName,
+  conversationTheme,
+  wardrobeItem,
   loading,
   onFollowUp,
 }: {
   response: StylistResponse
-  itemName: (id: number) => string
+  conversationTheme: string
+  wardrobeItem: (id: number) => ClothingItem | undefined
   loading: boolean
   onFollowUp: (prompt: string) => void
 }) {
+  const queryClient = useQueryClient()
+  const [saved, setSaved] = useState(false)
+  const saveToLookbook = useMutation({
+    mutationFn: () =>
+      apiRequest<{ id: number }>("/recommendations", {
+        method: "POST",
+        body: JSON.stringify({
+          save_token: response.lookbook_save_token,
+          display_title: conversationTheme,
+        }),
+      }),
+    onSuccess: () => {
+      setSaved(true)
+      queryClient.invalidateQueries({ queryKey: ["history"] })
+    },
+  })
+
   if (response.status !== "recommendation") {
     return (
       <div style={{ ...bubble, background: "#f7f4ef", color: "#1a1816" }}>
@@ -284,13 +416,25 @@ function RecommendationCard({
         </h3>
       </header>
       <div style={{ padding: "4px 22px 22px" }}>
-        <OutfitGroup title="Main Outfit" items={main} itemName={itemName} />
-        <OutfitGroup title="Layer" items={layers} itemName={itemName} />
-        <OutfitGroup title="Footwear" items={footwear} itemName={itemName} />
+        <OutfitGroup
+          title="Main Outfit"
+          items={main}
+          wardrobeItem={wardrobeItem}
+        />
+        <OutfitGroup
+          title="Layer"
+          items={layers}
+          wardrobeItem={wardrobeItem}
+        />
+        <OutfitGroup
+          title="Footwear"
+          items={footwear}
+          wardrobeItem={wardrobeItem}
+        />
         <OutfitGroup
           title="Optional Accessories"
           items={accessories}
-          itemName={itemName}
+          wardrobeItem={wardrobeItem}
           subtle
         />
 
@@ -344,17 +488,37 @@ function RecommendationCard({
           ))}
           <button
             type="button"
-            disabled
-            title="Validated recommendations are saved automatically"
+            onClick={() => saveToLookbook.mutate()}
+            disabled={
+              loading ||
+              saveToLookbook.isPending ||
+              saved ||
+              !response.lookbook_save_token
+            }
+            title={
+              saved ? "Saved to your Lookbook" : "Save this recommendation"
+            }
             style={{
               ...followUpButton,
               color: "#6d5632",
               background: "#f1e9db",
             }}
           >
-            ❤️ Save to Lookbook
+            {saved
+              ? "✓ Saved to Lookbook"
+              : saveToLookbook.isPending
+                ? "Saving…"
+                : "❤️ Save to Lookbook"}
           </button>
         </div>
+        {saveToLookbook.isError && (
+          <p
+            role="alert"
+            style={{ color: "#9f3a32", fontSize: 13, marginTop: 10 }}
+          >
+            {saveToLookbook.error.message}
+          </p>
+        )}
       </div>
     </article>
   )
@@ -396,12 +560,19 @@ function LoadingMessage() {
 
 export default function Stylist({ prefill = "" }: Props) {
   const { user } = useAuth()
-  const queryClient = useQueryClient()
   const [initialSession] = useState(() =>
     user ? loadStylistSession(user.id) : null,
   )
   const [messages, setMessages] = useState<ChatMessage[]>(
     () => initialSession?.messages ?? [],
+  )
+  const [conversationTheme, setConversationTheme] = useState(
+    () =>
+      initialSession?.conversationTheme ??
+      initialSession?.messages.find(
+        (message) => message.role === "user" && message.text,
+      )?.text ??
+      "",
   )
   const [input, setInput] = useState(prefill)
   const [temporaryError, setTemporaryError] = useState("")
@@ -430,8 +601,6 @@ export default function Stylist({ prefill = "" }: Props) {
     onSuccess: ({ response, conversationId }) => {
       if (conversationId !== conversationIdRef.current) return
       setMessages((current) => [...current, { role: "ai", response }])
-      if (response.status === "recommendation")
-        queryClient.invalidateQueries({ queryKey: ["history"] })
     },
     onError: (error, { conversationId }) => {
       if (conversationId === conversationIdRef.current)
@@ -439,18 +608,24 @@ export default function Stylist({ prefill = "" }: Props) {
     },
   })
 
-  const send = (value?: string) => {
+  const send = (value?: string, initialTheme?: string) => {
     const message = (value ?? input).trim()
     if (!message || chat.isPending) return
+    const stableTheme = conversationTheme || initialTheme?.trim() || message
+    if (!conversationTheme) setConversationTheme(stableTheme)
     setInput("")
     setTemporaryError("")
     setMessages((current) => [...current, { role: "user", text: message }])
-    chat.mutate({ message, conversationId: conversationIdRef.current })
+    chat.mutate({
+      message,
+      conversationId: conversationIdRef.current,
+    })
   }
 
   const resetConversation = () => {
     conversationIdRef.current += 1
     setMessages([])
+    setConversationTheme("")
     setInput("")
     setTemporaryError("")
     setShowNewRequestDialog(false)
@@ -477,15 +652,16 @@ export default function Stylist({ prefill = "" }: Props) {
       skipInitialPersistenceRef.current = false
       return
     }
-    if (hasConversation) saveStylistSession(user.id, messages)
+    if (hasConversation)
+      saveStylistSession(user.id, messages, Date.now(), conversationTheme)
     else clearStylistSession(user.id)
-  }, [hasConversation, messages, user])
+  }, [conversationTheme, hasConversation, messages, user])
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [messages, chat.isPending])
 
-  const itemName = (id: number) =>
-    wardrobe.data?.find((item) => item.id === id)?.name ?? "Wardrobe piece"
+  const wardrobeItem = (id: number) =>
+    wardrobe.data?.find((item) => item.id === id)
 
   return (
     <div style={{ paddingTop: 64, background: "#f7f4ef", minHeight: "100vh" }}>
@@ -585,7 +761,8 @@ export default function Stylist({ prefill = "" }: Props) {
                   {message.response && (
                     <RecommendationCard
                       response={message.response}
-                      itemName={itemName}
+                      conversationTheme={conversationTheme}
+                      wardrobeItem={wardrobeItem}
                       loading={chat.isPending}
                       onFollowUp={send}
                     />

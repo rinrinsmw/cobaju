@@ -156,6 +156,72 @@ def test_history_api_returns_only_authenticated_users_records(
     assert response.json() == []
 
 
+def test_recommendation_is_saved_only_after_explicit_post(
+    history_session: Session,
+) -> None:
+    from app.core.security import create_recommendation_save_token
+
+    def session_override() -> Generator[Session, None, None]:
+        yield history_session
+
+    app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="owner@example.com", hashed_password="hash"
+    )
+    token = create_recommendation_save_token(
+        user_id=1,
+        user_request="Make the previous recommendation more casual.",
+        item_ids=[10],
+        explanation="A polished blue layer for your presentation.",
+        evaluation_score=9.4,
+    )
+    try:
+        with TestClient(app) as client:
+            before_save = client.get("/recommendations")
+            save_response = client.post(
+                "/recommendations",
+                json={"save_token": token, "display_title": "First Date"},
+            )
+            after_save = client.get("/recommendations")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert before_save.json() == []
+    assert save_response.status_code == 201
+    assert save_response.json()["id"] > 0
+    assert len(after_save.json()) == 1
+    assert after_save.json()[0]["original_request"] == "First Date"
+
+
+def test_recommendation_save_receipt_is_bound_to_its_user(
+    history_session: Session,
+) -> None:
+    from app.core.security import create_recommendation_save_token
+
+    def session_override() -> Generator[Session, None, None]:
+        yield history_session
+
+    app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=2, email="other@example.com", hashed_password="hash"
+    )
+    token = create_recommendation_save_token(
+        user_id=1,
+        user_request="Private look",
+        item_ids=[10],
+        explanation="For the owner only.",
+        evaluation_score=9,
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post("/recommendations", json={"save_token": token})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert list_recommendation_history(history_session, 1) == []
+
+
 def test_history_api_requires_authentication() -> None:
     with TestClient(app) as client:
         response = client.get("/recommendations")

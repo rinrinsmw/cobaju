@@ -21,16 +21,16 @@ stylist_request
 ├── recommendation.repair                          optional, cached evidence
 ├── recommendation.validate                        after optional repair
 ├── evaluator                                      after optional repair
-├── mcp.save_recommendation                        invocation_number=1
 └── response_formatting
 ```
 
 If validation rejects the first candidate, `recommendation.repair` runs once
 with the cached MCP bundle and safe counts. The MCP session stays open, but no
-tool listing, retrieval, or persistence call occurs during repair. Final trace
-output records `mcp_session_count`, `tool_call_count`, `candidate_count`,
-`cache_reused_during_repair`, `retrieval_duration_ms`, and
-`persistence_duration_ms`.
+tool listing, retrieval, or persistence call occurs during repair. Generation
+never persists a Lookbook entry; saving is a separate authenticated HTTP action
+triggered by the user. Final trace output records `mcp_session_count`,
+`tool_call_count`, `candidate_count`, `cache_reused_during_repair`, and
+`retrieval_duration_ms`.
 
 The existing `clothing_analysis` and semantic `wardrobe_retrieval` workflows use
 the same abstraction. Their older compatibility wrapper classes remain small so
@@ -63,7 +63,6 @@ the existing API error handling.
 | `stylist.generate` | Tool-free Stylist generation using cached MCP evidence |
 | `recommendation.repair` | One tool-free correction using the same cached evidence |
 | `mcp.get_styling_candidates` | Single capped wardrobe retrieval duration and success |
-| `mcp.save_recommendation` | Post-validation ownership recheck and persistence duration |
 | `evaluator` | Evaluator latency, model, attempt, prompt version and tokens |
 | `recommendation.validate` | Deterministic violations and hallucination result |
 | `recommendation_deleted` | Recommendation ID, anonymized user ID, success, and delete latency |
@@ -149,8 +148,8 @@ Prompt versions are independently configurable:
 
 ```dotenv
 CHAT_GUARDRAIL_PROMPT_VERSION=chat-guardrail-v1
-STYLIST_PROMPT_VERSION=stylist-v3
-STYLIST_REPAIR_PROMPT_VERSION=stylist-repair-v1
+STYLIST_PROMPT_VERSION=stylist-v4
+STYLIST_REPAIR_PROMPT_VERSION=stylist-repair-v2
 EVALUATOR_PROMPT_VERSION=outfit-evaluator-v1
 ```
 

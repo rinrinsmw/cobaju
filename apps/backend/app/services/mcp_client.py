@@ -22,7 +22,7 @@ def _single_known_domain_exception(
     """Return the sole domain-error leaf, leaving every mixed group intact."""
 
     # Import here to avoid the module cycle through stylist_agent -> mcp_client.
-    from app.services.outfit_evaluator import RecommendationValidationError
+    from app.services.stylist_agent import StylistAgentError
 
     leaves: list[BaseException] = []
 
@@ -34,7 +34,7 @@ def _single_known_domain_exception(
         leaves.append(error)
 
     collect_leaves(error_group)
-    if len(leaves) == 1 and isinstance(leaves[0], RecommendationValidationError):
+    if len(leaves) == 1 and isinstance(leaves[0], StylistAgentError):
         return leaves[0]
     return None
 

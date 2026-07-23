@@ -30,6 +30,7 @@ export interface StylistResponse {
   message: string
   owned_items: Array<{ item_id: number; category: ClothingCategory; reason: string }>
   missing_categories: Array<{ category: ClothingCategory; guidance: string }>
+  lookbook_save_token?: string | null
 }
 
 export class ApiError extends Error {

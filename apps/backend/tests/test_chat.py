@@ -301,14 +301,13 @@ def run_workflow(
                 classifier=classifier or FakeClassifier(),
                 runner=runner,
                 evaluator=evaluator or FakeEvaluator(),
-                session=session,
                 settings=settings(),
             )
 
     return anyio.run(run)
 
 
-def test_normal_request_uses_one_session_one_retrieval_and_post_validation_save() -> None:
+def test_normal_request_returns_save_receipt_without_persisting() -> None:
     lifecycle = FakeRequestLifecycle(recommendation())
     runner = FakeRunner(lifecycle)
 
@@ -318,8 +317,9 @@ def test_normal_request_uses_one_session_one_retrieval_and_post_validation_save(
     assert runner.session_count == 1
     assert lifecycle.run_calls == 1
     assert lifecycle.repair_calls == 0
-    assert lifecycle.save_calls == 1
-    assert lifecycle.events == ["retrieve", "save"]
+    assert response.lookbook_save_token
+    assert lifecycle.save_calls == 0
+    assert lifecycle.events == ["retrieve"]
 
 
 def test_repair_reuses_cache_without_another_session_or_retrieval() -> None:
@@ -330,18 +330,28 @@ def test_repair_reuses_cache_without_another_session_or_retrieval() -> None:
 
     response = run_workflow(runner)
 
-    assert response == recommendation(complete=True)
+    assert response.model_dump(exclude={"lookbook_save_token"}) == recommendation(
+        complete=True
+    ).model_dump()
+    assert response.lookbook_save_token
     assert runner.session_count == 1
     assert lifecycle.run_calls == 1
     assert lifecycle.repair_calls == 1
     assert lifecycle.metrics.cache_reused_during_repair is True
-    assert lifecycle.events == ["retrieve", "repair-cache", "save"]
+    assert lifecycle.events == ["retrieve", "repair-cache"]
 
 
-def test_invalid_recommendation_is_never_sent_to_mcp_save() -> None:
+def test_invalid_recommendation_logs_initial_repair_and_final_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     invalid = recommendation(item_id=999)
     lifecycle = FakeRequestLifecycle(invalid, repaired=invalid)
     runner = FakeRunner(lifecycle)
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "app.services.chat.structured_log",
+        lambda event, **fields: events.append((event, fields)),
+    )
 
     with pytest.raises(RecommendationValidationError):
         run_workflow(runner)
@@ -349,6 +359,24 @@ def test_invalid_recommendation_is_never_sent_to_mcp_save() -> None:
     assert runner.session_count == 1
     assert lifecycle.repair_calls == 1
     assert lifecycle.save_calls == 0
+    assert [event for event, _ in events] == [
+        "stylist_initial_recommendation",
+        "stylist_repaired_recommendation",
+        "stylist_recommendation_validation_failed",
+    ]
+    initial = events[0][1]["recommendation"]
+    repaired = events[1][1]["recommendation"]
+    final_validation = events[2][1]["validation"]
+    assert isinstance(initial, dict) and initial["owned_items"][0]["item_id"] == 999
+    assert isinstance(repaired, dict) and repaired["owned_items"][0]["item_id"] == 999
+    assert isinstance(final_validation, dict)
+    assert final_validation["accepted"] is False
+    assert final_validation["grounding_violations"] == [
+        "ITEM_ID_NOT_IN_CACHED_EVIDENCE: [999]."
+    ]
+    assert final_validation["deterministic_violations"] == [
+        "OWNED_OR_EXISTING_ITEM_ID_INVALID: Item 999 is not a confirmed item owned by this user."
+    ]
 
 
 @pytest.mark.parametrize(
@@ -436,8 +464,8 @@ def test_subjective_evaluator_rejection_still_returns_200(
     assert response.status_code == 200
     assert evaluator.calls == 1
     assert lifecycle.repair_calls == 0
-    assert lifecycle.save_calls == 1
-    assert lifecycle.events == ["retrieve", "save"]
+    assert lifecycle.save_calls == 0
+    assert lifecycle.events == ["retrieve"]
 
 
 def test_evaluator_completeness_rejection_is_logged_but_returns_200(
@@ -463,14 +491,14 @@ def test_evaluator_completeness_rejection_is_logged_but_returns_200(
     assert evaluator.calls == 1
     assert lifecycle.run_calls == 1
     assert lifecycle.repair_calls == 0
-    assert lifecycle.save_calls == 1
-    assert lifecycle.events == ["retrieve", "save"]
+    assert lifecycle.save_calls == 0
+    assert lifecycle.events == ["retrieve"]
     assert payload["status"] == 200
     assert payload["validation_failures"] == []
     assert "EVALUATOR_REQUIRED_COMPONENTS_MISSING" in payload["evaluator_failures"]
     assert "EVALUATOR_OVERALL_REJECTED" in payload["evaluator_failures"]
     assert payload["evaluator_nonblocking"] is True
-    assert payload["tool_call_count"] == 2
+    assert payload["tool_call_count"] == 1
     assert payload["model_attempt_count"] >= 0
     assert payload["total_latency_ms"] >= 0
     assert payload["evaluator_scores"] == {

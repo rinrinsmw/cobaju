@@ -54,22 +54,33 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - exactly one tool-free repair after deterministic rejection or a verified
   unsupported claim;
 - mocked evaluation, cross-user, invalid-ID, unsupported-claim, and repair tests.
-- a recommendation table populated only after final evaluation succeeds;
+- a recommendation table populated only after the user explicitly saves a
+  final evaluated result;
 - an authenticated, newest-first `GET /recommendations` history endpoint;
 - safe unavailable-item output when historically selected clothing is deleted;
 - persistence, ownership-isolation, deleted-item, and history API tests.
 
 ## Recommendation history
 
-The chat service calls MCP `save_recommendation` only after deterministic
-validation accepts the final candidate. A verified unsupported prose claim may
-also block because Python does not inspect prose semantics. Evaluator quality
-judgments otherwise remain nonblocking observability metadata. The MCP tool
-rechecks ownership, writes the history record, and returns `persisted: true`.
+The chat service does not write recommendation history. After deterministic
+validation accepts the final candidate, it returns a short-lived, signed
+`lookbook_save_token`. The frontend sends that receipt to `POST /recommendations`
+only when the user clicks **Save to Lookbook**. The save endpoint binds the
+receipt to the authenticated user and rechecks item ownership before writing.
+The separate Lookbook save request includes the conversation's initial styling
+theme as its display title. Stylist chat requests remain unchanged and later
+refinement prompts are still used to generate the latest outfit.
 
 ```bash
 curl http://127.0.0.1:8000/recommendations \
   -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/recommendations \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"save_token":"TOKEN_FROM_CHAT_RESPONSE"}'
 ```
 
 Records contain the original request, selected IDs, explanation, score, and
@@ -95,12 +106,17 @@ required-category coverage, and explicit `Not owned:` labels. Candidates that
 fail are sent once to a tool-free repair model together with the original
 structured response, violations, and wardrobe candidates retained from MCP
 tool results. The repair does not reopen MCP, list tools, retrieve again, or
-save. Once deterministic validation passes, evaluator quality scores and
-warnings are recorded without allowing `accepted=false` or `complete=false` to
-block persistence or HTTP 200. A verified unsupported claim may use the same
-single repair. If the final candidate still has an objective failure, the
-endpoint returns its existing generic HTTP 503 response and nothing is
-persisted.
+save. Before evaluation, user-visible messages and reasons are rebuilt from the
+selected cached item names, colors, and categories so warmer prose cannot add
+unsupported wardrobe facts. If a model omits the required-category plan, it is
+reconstructed from the response's selected owned and explicitly missing
+categories before strict validation. If the evaluator still identifies an
+unsupported claim, its exact claim and feedback are supplied to the same repair.
+Evaluator quality scores and warnings are recorded without allowing
+`accepted=false` or `complete=false` to block the response or HTTP 200. If the
+final candidate still has an objective failure, the endpoint returns its
+existing generic HTTP 503 response. Recommendation generation never persists a
+Lookbook entry.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \
@@ -142,10 +158,10 @@ stdio streams, and child process, including when the caller raises an exception.
 server can still list categories, get confirmed items, and validate a
 recommendation when semantic retrieval is not configured.
 
-Normal Stylist requests use only `get_styling_candidates` and, after final
-validation, `save_recommendation`. They do not list tools or call the lower-level
-search/category tools. `save_recommendation` rejects missing, unconfirmed,
-cross-user, duplicate, or invalid IDs before durably saving the accepted result.
+Normal Stylist requests use only `get_styling_candidates`. They do not list tools
+or call the lower-level search/category tools. The MCP `save_recommendation`
+tool remains ownership-safe, but the web app's explicit Lookbook action uses the
+authenticated recommendations API.
 
 ## Wardrobe endpoints
 

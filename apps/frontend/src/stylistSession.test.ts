@@ -16,14 +16,27 @@ const messages: ChatMessage[] = [
 describe('stylist session persistence', () => {
   it('stores and restores a versioned session for one user', () => {
     const now = Date.parse('2026-07-18T08:00:00.000Z')
-    saveStylistSession(12, messages, now)
+    saveStylistSession(12, messages, now, 'Dinner')
 
     expect(loadStylistSession(12, now)).toEqual({
       version: 1,
       messages,
+      conversationTheme: 'Dinner',
       updatedAt: '2026-07-18T08:00:00.000Z',
     })
     expect(loadStylistSession(99, now)).toBeNull()
+  })
+
+  it('continues to load existing sessions that do not have a theme', () => {
+    const now = Date.parse('2026-07-18T08:00:00.000Z')
+    window.sessionStorage.setItem(getStylistSessionKey(12), JSON.stringify({
+      version: 1,
+      messages,
+      updatedAt: new Date(now).toISOString(),
+    }))
+
+    expect(loadStylistSession(12, now)?.messages).toEqual(messages)
+    expect(loadStylistSession(12, now)?.conversationTheme).toBeUndefined()
   })
 
   it('discards a session older than 24 hours', () => {
