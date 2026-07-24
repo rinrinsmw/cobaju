@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.clothing_item import ClothingCategory
 
@@ -88,16 +88,25 @@ class StylistApiResponse(StylistResponse):
     lookbook_save_token: str | None = None
 
 
-class OutfitEvaluation(BaseModel):
-    """Strict verdict returned by the separate outfit evaluator agent."""
+class StyleCriticEvaluation(BaseModel):
+    """Structured feedback returned only to the Stylist workflow."""
 
-    accepted: bool
-    occasion_appropriate: bool
-    complete: bool
-    colors_compatible: bool
-    styles_compatible: bool
-    evaluation_score: float = Field(ge=0, le=10)
-    unsupported_claims: list[str] = Field(default_factory=list, max_length=10)
-    feedback: str = Field(min_length=1, max_length=600)
+    approved: bool
+    issues: list[str] = Field(max_length=10)
+    repair_instruction: str = Field(max_length=600)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def verdict_fields_must_be_consistent(self) -> "StyleCriticEvaluation":
+        self.issues = [issue.strip() for issue in self.issues if issue.strip()]
+        self.repair_instruction = self.repair_instruction.strip()
+        if self.approved and (self.issues or self.repair_instruction):
+            raise ValueError(
+                "approved critic output must have no issues or repair instruction"
+            )
+        if not self.approved and (not self.issues or not self.repair_instruction):
+            raise ValueError(
+                "rejected critic output needs issues and a repair instruction"
+            )
+        return self

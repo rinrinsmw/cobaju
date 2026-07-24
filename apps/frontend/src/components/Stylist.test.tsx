@@ -115,6 +115,55 @@ describe("Stylist session UI", () => {
     expect(window.sessionStorage.getItem(getStylistSessionKey(7))).toBeNull()
   })
 
+  it("shows the total wardrobe count with a confirmed-item breakdown", async () => {
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      id: index + 1,
+      name: `Item ${index + 1}`,
+      category: "top",
+      color: "black",
+      description: null,
+      original_image_path: null,
+      analysis_completed: true,
+      processing_status: index === 9 ? "pending" : "completed",
+    }))
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/wardrobe/items") return jsonResponse(items)
+      throw new Error(`Unexpected request: ${String(input)}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Stylist />
+        </QueryClientProvider>,
+      )
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    let liveWardrobeCard: HTMLElement | null | undefined
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const liveWardrobeLabel = [...container.querySelectorAll("p")].find(
+        (element) => element.textContent === "Live wardrobe",
+      )
+      liveWardrobeCard = liveWardrobeLabel?.parentElement
+      if (liveWardrobeCard?.textContent?.includes("10")) break
+      await act(
+        async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+      )
+    }
+    expect(liveWardrobeCard?.textContent).toContain("10")
+    expect(liveWardrobeCard?.textContent).toContain(
+      "9 confirmed for styling · 1 awaiting confirmation",
+    )
+  })
+
   it("returns a recommendation after the user manually sends a request", async () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, options?: RequestInit) => {
@@ -441,6 +490,10 @@ describe("Stylist session UI", () => {
         'input[aria-label="Styling request"]',
       )?.disabled,
     ).toBe(true)
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      "Wardrobe Stylist",
+    )
+    expect(document.body.textContent).not.toContain("Choosing shoes")
 
     await act(async () => {
       resolveChat?.(

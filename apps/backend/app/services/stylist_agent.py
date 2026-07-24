@@ -470,7 +470,7 @@ class RequestScopedStylist:
         )
         generation_scope = (
             self.owner.observability.observe(
-                "stylist.generate",
+                "stylist_generation",
                 as_type="generation",
                 model=self.owner.settings.openrouter_stylist_model,
                 model_parameters={
@@ -483,17 +483,31 @@ class RequestScopedStylist:
             if self.owner.observability is not None
             else nullcontext()
         )
-        with generation_scope:
-            response = await self.owner._generate(
-                instructions=_STYLIST_INSTRUCTIONS,
-                model_input={
-                    "user_request": message,
-                    "wardrobe_evidence": bundle.model_dump(mode="json"),
-                },
-                stage="stylist_model",
-                temperature=self.owner.settings.stylist_temperature,
-                prompt_version=self.owner.settings.stylist_prompt_version,
-            )
+        with generation_scope as generation_observation:
+            try:
+                response = await self.owner._generate(
+                    instructions=_STYLIST_INSTRUCTIONS,
+                    model_input={
+                        "user_request": message,
+                        "wardrobe_evidence": bundle.model_dump(mode="json"),
+                    },
+                    stage="stylist_model",
+                    temperature=self.owner.settings.stylist_temperature,
+                    prompt_version=self.owner.settings.stylist_prompt_version,
+                )
+            except Exception as error:
+                if generation_observation is not None:
+                    generation_observation.update(
+                        output={
+                            "status": "failed",
+                            "failure_reason": type(error).__name__,
+                        }
+                    )
+                raise
+            if generation_observation is not None:
+                generation_observation.update(
+                    output={"status": "completed", "failure_reason": None}
+                )
         response = _ground_recommendation_prose(response, bundle.candidate_items)
         return StylistRunOutcome(
             response=response,

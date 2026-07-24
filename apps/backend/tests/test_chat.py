@@ -24,7 +24,7 @@ from app.models.user import User
 from app.schemas.chat import (
     ChatScopeDecision,
     MissingCategoryGuidance,
-    OutfitEvaluation,
+    StyleCriticEvaluation,
     RecommendedOwnedItem,
     RequiredCategory,
     StylistResponse,
@@ -67,18 +67,14 @@ class FakeEvaluator:
         user_request: str,
         candidate: StylistResponse,
         evidence: list[ClothingItem],
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, evidence
         accepted = self.accepted[self.calls]
         self.calls += 1
-        return OutfitEvaluation(
-            accepted=accepted,
-            occasion_appropriate=accepted,
-            complete=accepted,
-            colors_compatible=accepted,
-            styles_compatible=accepted,
-            evaluation_score=9 if accepted else 3,
-            feedback="Passes." if accepted else "Repair the outfit.",
+        return StyleCriticEvaluation(
+            approved=accepted,
+            issues=[] if accepted else ["The draft needs repair."],
+            repair_instruction="" if accepted else "Repair the outfit.",
         )
 
 
@@ -91,17 +87,13 @@ class SubjectiveFailureEvaluator:
         user_request: str,
         candidate: StylistResponse,
         evidence: list[ClothingItem],
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, evidence
         self.calls += 1
-        return OutfitEvaluation(
-            accepted=False,
-            occasion_appropriate=False,
-            complete=True,
-            colors_compatible=False,
-            styles_compatible=False,
-            evaluation_score=2,
-            feedback="Subjective quality is low.",
+        return StyleCriticEvaluation(
+            approved=False,
+            issues=["The occasion and styling do not match the request."],
+            repair_instruction="Adjust the outfit to match the occasion.",
         )
 
 
@@ -114,17 +106,13 @@ class CompletenessRejectionEvaluator:
         user_request: str,
         candidate: StylistResponse,
         evidence: list[ClothingItem],
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, evidence
         self.calls += 1
-        return OutfitEvaluation(
-            accepted=False,
-            occasion_appropriate=True,
-            complete=False,
-            colors_compatible=True,
-            styles_compatible=True,
-            evaluation_score=6,
-            feedback="The evaluator considers components missing.",
+        return StyleCriticEvaluation(
+            approved=False,
+            issues=["A required outfit category is missing."],
+            repair_instruction="Cover every required category.",
         )
 
 
@@ -449,7 +437,7 @@ def test_authenticated_endpoint_preserves_response_shape(api_client: TestClient)
     assert response.json()["owned_items"][0]["item_id"] == 12
 
 
-def test_subjective_evaluator_rejection_still_returns_200(
+def test_style_critic_rejection_repairs_once_and_still_returns_200(
     api_client: TestClient,
 ) -> None:
     lifecycle = FakeRequestLifecycle(recommendation())
@@ -463,12 +451,12 @@ def test_subjective_evaluator_rejection_still_returns_200(
 
     assert response.status_code == 200
     assert evaluator.calls == 1
-    assert lifecycle.repair_calls == 0
+    assert lifecycle.repair_calls == 1
     assert lifecycle.save_calls == 0
-    assert lifecycle.events == ["retrieve"]
+    assert lifecycle.events == ["retrieve", "repair-cache"]
 
 
-def test_evaluator_completeness_rejection_is_logged_but_returns_200(
+def test_style_critic_rejection_is_logged_and_returns_repaired_response(
     api_client: TestClient,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -490,25 +478,19 @@ def test_evaluator_completeness_rejection_is_logged_but_returns_200(
     assert response.status_code == 200
     assert evaluator.calls == 1
     assert lifecycle.run_calls == 1
-    assert lifecycle.repair_calls == 0
+    assert lifecycle.repair_calls == 1
     assert lifecycle.save_calls == 0
-    assert lifecycle.events == ["retrieve"]
+    assert lifecycle.events == ["retrieve", "repair-cache"]
     assert payload["status"] == 200
     assert payload["validation_failures"] == []
-    assert "EVALUATOR_REQUIRED_COMPONENTS_MISSING" in payload["evaluator_failures"]
-    assert "EVALUATOR_OVERALL_REJECTED" in payload["evaluator_failures"]
+    assert payload["evaluator_failures"] == ["STYLE_CRITIC_REJECTED"]
     assert payload["evaluator_nonblocking"] is True
     assert payload["tool_call_count"] == 1
     assert payload["model_attempt_count"] >= 0
     assert payload["total_latency_ms"] >= 0
     assert payload["evaluator_scores"] == {
-        "accepted": False,
-        "occasion_appropriate": True,
-        "complete": False,
-        "colors_compatible": True,
-        "styles_compatible": True,
-        "evaluation_score": 6.0,
-        "unsupported_claim_count": 0,
+        "approved": False,
+        "issue_count": 1,
     }
 
 

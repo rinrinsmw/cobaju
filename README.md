@@ -12,12 +12,12 @@ using a trusted server-side user context.
 One authenticated Wardrobe Stylist Agent now guards chat scope, plans outfit
 categories, calls those MCP tools, and separates validated owned IDs from generic
 missing-category advice.
-Every candidate now passes through a separate temperature-zero evaluator and a
-database-backed deterministic validator. A rejected candidate receives at most
+Every candidate passes through unchanged deterministic rules before a separate,
+temperature-zero Style Critic sub-agent. A rejected candidate receives at most
 one targeted, tool-free repair using the first run's wardrobe evidence; the MCP
-workflow is never rerun, and a second failure is never returned to the user.
-Accepted recommendations are saved with their evaluator score and exposed
-through an ownership-scoped history API used by the approved Lookbook screen.
+workflow is never rerun, and deterministic validation always runs after repair.
+Accepted recommendations keep the existing optional signed Lookbook-save flow
+and ownership-scoped history API.
 
 ## Repository layout
 
@@ -306,9 +306,10 @@ an embedding provider.
 ## Wardrobe stylist API
 
 Set `OPENROUTER_CHAT_GUARDRAIL_MODEL`, `OPENROUTER_STYLIST_MODEL`, and
-`OPENROUTER_EVALUATOR_MODEL` in `.env`. The guardrail and evaluator need strict
-JSON output; the stylist also needs Chat Completions tool calling through
-OpenRouter.
+`OPENROUTER_STYLE_CRITIC_MODEL` in `.env`. Existing
+`OPENROUTER_EVALUATOR_MODEL` values remain a fallback. The guardrail and Style
+Critic need strict JSON output; the stylist also needs Chat Completions tool
+calling through OpenRouter.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \
@@ -322,20 +323,21 @@ unrelated requests, and opens exactly one MCP session. Generation receives the
 cached candidate bundle and makes no tool calls. Missing categories are clearly
 non-owned. Before persistence, deterministic validation rechecks cached owned
 evidence, category claims, required-category coverage,
-and the `Not owned:` label. Candidates that pass those checks reach the
-temperature-`0.0` evaluator for occasion, completeness, color, style, and
-unsupported claims. Objective failures (missing required outfit components or
-unsupported factual claims) get one targeted repair using exact failure codes
-and already retrieved wardrobe candidates. Subjective occasion, color, style,
-and overall quality judgments are Langfuse scores, not HTTP blockers. Repair
-reuses the same session cache and never lists tools, retrieves, or calls
-`save_recommendation`. Persistence occurs only after all blocking checks pass.
+and the `Not owned:` label. Valid drafts reach the tool-free
+temperature-`0.0` Style Critic. It returns only `approved`, `issues`, and
+`repair_instruction` and checks wardrobe evidence, category coverage, occasion,
+refinement instructions, unsupported claims, and exact repetition when previous
+outfit evidence is available. A rejection gets one targeted repair using the
+already retrieved wardrobe candidates. The repaired result always passes
+deterministic validation again and is not sent through an unbounded critic
+loop. Malformed critic output may be retried once; a valid rejection is not.
+Repair never lists tools, retrieves, or calls `save_recommendation`.
 
 ## Recommendation history
 
 Every accepted chat recommendation is saved with the conversation's initial
 styling theme (rather than a later refinement prompt), selected item IDs, final
-explanation, evaluator score, and completion timestamp. List the authenticated
+explanation, internal approval score, and completion timestamp. List the authenticated
 user's newest records first:
 
 ```bash

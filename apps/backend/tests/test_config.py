@@ -70,12 +70,25 @@ def test_agent_temperatures_and_limits_have_safe_defaults() -> None:
     assert settings.stylist_temperature == 0.5
     assert settings.stylist_repair_temperature == 0.1
     assert settings.evaluator_temperature == 0.0
+    assert settings.style_critic_temperature == 0.0
     assert settings.stylist_max_turns == 8
     assert settings.stylist_max_tool_calls == 8
     assert settings.chat_guardrail_prompt_version == "chat-guardrail-v1"
     assert settings.stylist_prompt_version == "stylist-v4"
     assert settings.stylist_repair_prompt_version == "stylist-repair-v2"
     assert settings.evaluator_prompt_version == "outfit-evaluator-v1"
+    assert settings.style_critic_prompt_version == "style-critic-v1"
+
+
+def test_style_critic_model_falls_back_to_existing_evaluator_setting() -> None:
+    legacy = Settings(openrouter_evaluator_model="legacy-model")
+    explicit = Settings(
+        openrouter_evaluator_model="legacy-model",
+        openrouter_style_critic_model="critic-model",
+    )
+
+    assert legacy.resolved_style_critic_model == "legacy-model"
+    assert explicit.resolved_style_critic_model == "critic-model"
 
 
 def test_langfuse_host_environment_name_is_supported(

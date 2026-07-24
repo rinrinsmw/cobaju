@@ -67,11 +67,15 @@ const followUpPrompts = [
   },
 ]
 
-const loadingMessages = [
-  "Looking through your wardrobe...",
-  "Matching colors...",
-  "Choosing shoes...",
-  "Building your outfit...",
+const agentProgress = [
+  {
+    name: "Wardrobe Stylist",
+    detail: "Creating your outfit",
+  },
+  {
+    name: "Style Critic",
+    detail: "Reviewing the recommendation",
+  },
 ]
 
 const emoji: Record<ClothingCategory, string> = {
@@ -525,21 +529,23 @@ function RecommendationCard({
 }
 
 function LoadingMessage() {
-  const [messageIndex, setMessageIndex] = useState(0)
+  const [agentIndex, setAgentIndex] = useState(0)
 
   useEffect(() => {
-    const interval = window.setInterval(
-      () =>
-        setMessageIndex((current) => (current + 1) % loadingMessages.length),
-      1400,
+    const timeout = window.setTimeout(
+      () => setAgentIndex(agentProgress.length - 1),
+      5000,
     )
-    return () => window.clearInterval(interval)
+    return () => window.clearTimeout(timeout)
   }, [])
+
+  const agent = agentProgress[agentIndex]
 
   return (
     <div
       role="status"
       aria-live="polite"
+      aria-label={`${agent.name} is working. ${agent.detail}.`}
       style={{ display: "flex", alignItems: "center", gap: 10 }}
     >
       <span style={avatar}>✦</span>
@@ -551,8 +557,21 @@ function LoadingMessage() {
           minWidth: 220,
         }}
       >
-        {loadingMessages[messageIndex]}
-        <span className="stylist-shimmer" aria-hidden="true" />
+        <span
+          style={{
+            display: "block",
+            color: "#1a1816",
+            fontSize: 12,
+            fontWeight: 700,
+            letterSpacing: ".04em",
+          }}
+        >
+          {agent.name}
+        </span>
+        <span style={{ display: "block", marginTop: 3 }}>
+          {agent.detail}
+          <span className="stylist-shimmer" aria-hidden="true" />
+        </span>
       </span>
     </div>
   )
@@ -662,6 +681,32 @@ export default function Stylist({ prefill = "" }: Props) {
 
   const wardrobeItem = (id: number) =>
     wardrobe.data?.find((item) => item.id === id)
+  const wardrobeItems = wardrobe.data ?? []
+  const confirmedItems = wardrobeItems.filter(
+    (item) => item.processing_status === "completed",
+  ).length
+  const awaitingConfirmation = wardrobeItems.filter(
+    (item) =>
+      item.processing_status === "pending" && item.analysis_completed,
+  ).length
+  const stillProcessing = wardrobeItems.filter(
+    (item) =>
+      item.processing_status === "processing" ||
+      (item.processing_status === "pending" && !item.analysis_completed),
+  ).length
+  const failedItems = wardrobeItems.filter(
+    (item) => item.processing_status === "failed",
+  ).length
+  const wardrobeStatus = [
+    `${confirmedItems} confirmed for styling`,
+    awaitingConfirmation > 0
+      ? `${awaitingConfirmation} awaiting confirmation`
+      : "",
+    stillProcessing > 0 ? `${stillProcessing} still processing` : "",
+    failedItems > 0 ? `${failedItems} need attention` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ")
 
   return (
     <div style={{ paddingTop: 64, background: "#f7f4ef", minHeight: "100vh" }}>
@@ -821,12 +866,10 @@ export default function Stylist({ prefill = "" }: Props) {
             >
               {wardrobe.isPending
                 ? "…"
-                : (wardrobe.data?.filter(
-                    (item) => item.processing_status === "completed",
-                  ).length ?? 0)}
+                : wardrobeItems.length}
             </p>
             <p style={{ color: "#6b6055", fontSize: 12, lineHeight: 1.55 }}>
-              confirmed pieces available to your stylist
+              {wardrobe.isPending ? "Checking your wardrobe…" : wardrobeStatus}
             </p>
           </div>
           <div

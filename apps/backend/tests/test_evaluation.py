@@ -2,9 +2,11 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import anyio
 import pytest
+from agents.exceptions import ModelBehaviorError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -14,7 +16,7 @@ from app.models.user import User
 from app.schemas.chat import (
     ChatScopeDecision,
     MissingCategoryGuidance,
-    OutfitEvaluation,
+    StyleCriticEvaluation,
     RecommendedOwnedItem,
     RequiredCategory,
     StylistResponse,
@@ -31,6 +33,7 @@ from app.services.outfit_evaluator import (
     get_owned_item_evidence,
     validate_recommendation,
 )
+from app.services.style_critic import OpenAIAgentsStyleCritic
 from app.services.stylist_agent import (
     _REPAIR_INSTRUCTIONS,
     _STYLIST_INSTRUCTIONS,
@@ -96,7 +99,7 @@ class SequencedRunner:
 
 
 class SequencedEvaluator:
-    def __init__(self, evaluations: list[OutfitEvaluation]) -> None:
+    def __init__(self, evaluations: list[StyleCriticEvaluation]) -> None:
         self.evaluations = evaluations
         self.calls = 0
 
@@ -105,7 +108,7 @@ class SequencedEvaluator:
         user_request: str,
         candidate: StylistResponse,
         owned_item_evidence: list[ClothingItem],
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, owned_item_evidence
         evaluation = self.evaluations[self.calls]
         self.calls += 1
@@ -117,16 +120,12 @@ def evaluation(
     accepted: bool,
     feedback: str = "Looks good.",
     unsupported_claims: list[str] | None = None,
-) -> OutfitEvaluation:
-    return OutfitEvaluation(
-        accepted=accepted,
-        occasion_appropriate=accepted,
-        complete=accepted,
-        colors_compatible=accepted,
-        styles_compatible=accepted,
-        evaluation_score=10 if accepted else 4,
-        feedback=feedback,
-        unsupported_claims=unsupported_claims or [],
+) -> StyleCriticEvaluation:
+    issues = unsupported_claims or ([] if accepted else ["The draft needs repair."])
+    return StyleCriticEvaluation(
+        approved=accepted,
+        issues=issues,
+        repair_instruction="" if accepted else feedback,
     )
 
 
@@ -186,6 +185,55 @@ def test_stylist_prompts_require_evidence_grounded_prose() -> None:
     assert "If the evidence cannot support a detail, omit it" in _STYLIST_INSTRUCTIONS
     assert "Remove every unsupported claim named" in _REPAIR_INSTRUCTIONS
     assert "Keep warmth in the conversational phrasing" in _REPAIR_INSTRUCTIONS
+
+
+def test_style_critic_retries_malformed_output_once_without_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_run(agent: object, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        assert getattr(agent, "tools") == []
+        if calls == 1:
+            raise ModelBehaviorError("malformed structured output")
+        return SimpleNamespace(
+            final_output=StyleCriticEvaluation(
+                approved=True,
+                issues=[],
+                repair_instruction="",
+            )
+        )
+
+    monkeypatch.setattr("app.services.style_critic.Runner.run", fake_run)
+    critic = OpenAIAgentsStyleCritic(
+        Settings(
+            openrouter_api_key="test-key",
+            openrouter_style_critic_model="critic-model",
+        )
+    )
+
+    async def run() -> StyleCriticEvaluation:
+        return await critic.evaluate(
+            "Office outfit",
+            candidate(10),
+            [
+                ClothingItem(
+                    id=10,
+                    user_id=1,
+                    name="Blue shirt",
+                    category=ClothingCategory.TOP,
+                    color="blue",
+                )
+            ],
+        )
+
+    result = anyio.run(run)
+
+    assert result.approved is True
+    assert calls == 2
 
 
 def test_stylist_free_text_is_rebuilt_from_cached_item_evidence() -> None:
@@ -331,8 +379,7 @@ def test_verified_unsupported_claim_triggers_one_successful_targeted_repair(
                 accepted=False,
                 feedback="Remove the unsupported fabric claim.",
                 unsupported_claims=["The shirt is wrinkle-proof."],
-            ),
-            evaluation(accepted=True),
+            )
         ]
     )
 
@@ -355,15 +402,15 @@ def test_verified_unsupported_claim_triggers_one_successful_targeted_repair(
 
     assert result.model_dump(exclude={"lookbook_save_token"}) == response.model_dump()
     assert result.lookbook_save_token
-    assert evaluator.calls == 2
+    assert evaluator.calls == 1
     assert runner.run_calls == 1
     assert runner.feedback[0] is None
-    assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
-    assert "UNSUPPORTED_CLAIM: The shirt is wrinkle-proof." in (
+    assert "STYLE_CRITIC_ISSUE: The shirt is wrinkle-proof." in (
         runner.feedback[1] or ""
     )
-    assert "EVALUATOR_FEEDBACK: Remove the unsupported fabric claim." in (
-        runner.feedback[1] or ""
+    assert (
+        "STYLE_CRITIC_REPAIR_INSTRUCTION: Remove the unsupported fabric claim."
+        in (runner.feedback[1] or "")
     )
 
 
@@ -407,30 +454,23 @@ def test_deterministic_rejection_repairs_before_calling_evaluator(
     assert result.model_dump(exclude={"lookbook_save_token"}) == repaired.model_dump()
     assert result.lookbook_save_token
     assert runner.run_calls == 1
-    assert evaluator.calls == 1
+    assert evaluator.calls == 0
     assert "must have an owned item" in (runner.feedback[1] or "")
 
 
-def test_stylist_repairs_no_more_than_once(
+def test_valid_critic_rejection_repairs_once_without_rechecking_critic(
     evaluation_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     response = candidate(10)
     runner = SequencedRunner([outcome(response), outcome(response)])
     evaluator = SequencedEvaluator(
         [
             evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
-            evaluation(accepted=False, unsupported_claims=["Unsupported claim."]),
         ]
     )
-    events: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "app.services.chat.structured_log",
-        lambda event, **fields: events.append((event, fields)),
-    )
 
-    async def run() -> None:
-        await create_stylist_response(
+    async def run() -> StylistResponse:
+        return await create_stylist_response(
             message="Dress me for the office",
             current_user=User(
                 id=1, email="owner@example.com", hashed_password="hash"
@@ -444,24 +484,11 @@ def test_stylist_repairs_no_more_than_once(
             ),
         )
 
-    with pytest.raises(RecommendationValidationError):
-        anyio.run(run)
+    result = anyio.run(run)
 
-    assert evaluator.calls == 2
+    assert result.status == "recommendation"
+    assert evaluator.calls == 1
     assert runner.run_calls == 1
     assert len(runner.feedback) == 2
-    assert "EVALUATOR_UNSUPPORTED_CLAIMS" in (runner.feedback[1] or "")
+    assert "STYLE_CRITIC_ISSUE: Unsupported claim." in (runner.feedback[1] or "")
     assert runner.save_calls == 0
-    failed_event = next(
-        fields
-        for event, fields in events
-        if event == "stylist_recommendation_validation_failed"
-    )
-    validation = failed_event["validation"]
-    assert isinstance(validation, dict)
-    assert validation["blocking_evaluator_violations"] == [
-        "EVALUATOR_UNSUPPORTED_CLAIMS"
-    ]
-    assert validation["final_blocking_violations"] == [
-        "EVALUATOR_UNSUPPORTED_CLAIMS"
-    ]

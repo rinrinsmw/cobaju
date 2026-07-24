@@ -18,7 +18,7 @@ from app.observability import (
 from app.schemas.chat import ChatRequest, StylistApiResponse, StylistResponse
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import ChatGuardrailError, ChatScopeClassifier
-from app.services.outfit_evaluator import OutfitEvaluator
+from app.services.style_critic import StyleCritic
 from app.services.stylist_agent import StylistAgentError, StylistRunner
 
 
@@ -31,7 +31,7 @@ async def recommend_outfit(
     current_user: User = Depends(get_current_user),
     classifier: ChatScopeClassifier = Depends(get_chat_scope_classifier),
     runner: StylistRunner = Depends(get_stylist_runner),
-    evaluator: OutfitEvaluator = Depends(get_outfit_evaluator),
+    evaluator: StyleCritic = Depends(get_outfit_evaluator),
 ) -> StylistResponse:
     """Guard one request, then run one wardrobe-grounded stylist agent."""
 

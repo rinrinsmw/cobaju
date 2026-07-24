@@ -15,16 +15,16 @@ stylist_request
 ├── auth.validate
 ├── guardrail.validate
 ├── mcp.get_styling_candidates                     invocation_number=1
-├── stylist.generate
-├── recommendation.validate
-├── evaluator
-├── recommendation.repair                          optional, cached evidence
-├── recommendation.validate                        after optional repair
-├── evaluator                                      after optional repair
+├── stylist_generation
+├── deterministic_validation
+├── style_critic                                   valid initial drafts only
+├── targeted_repair                                optional, cached evidence
+├── final_validation                               after optional repair
 └── response_formatting
 ```
 
-If validation rejects the first candidate, `recommendation.repair` runs once
+If deterministic validation or the Style Critic rejects the first candidate,
+`targeted_repair` runs once
 with the cached MCP bundle and safe counts. The MCP session stays open, but no
 tool listing, retrieval, or persistence call occurs during repair. Generation
 never persists a Lookbook entry; saving is a separate authenticated HTTP action
@@ -60,11 +60,12 @@ the existing API error handling.
 |---|---|
 | `auth.validate` | JWT validation and user database lookup |
 | `guardrail.validate` | Scope classifier latency, model, prompt version and tokens |
-| `stylist.generate` | Tool-free Stylist generation using cached MCP evidence |
-| `recommendation.repair` | One tool-free correction using the same cached evidence |
+| `stylist_generation` | Tool-free Stylist generation using cached MCP evidence |
+| `targeted_repair` | One tool-free correction using the same cached evidence |
 | `mcp.get_styling_candidates` | Single capped wardrobe retrieval duration and success |
-| `evaluator` | Evaluator latency, model, attempt, prompt version and tokens |
-| `recommendation.validate` | Deterministic violations and hallucination result |
+| `style_critic` | Tool-free critic latency, approval status, issue count, model attempts and prompt version |
+| `deterministic_validation` | Initial deterministic status and stable failure codes |
+| `final_validation` | Post-repair deterministic status and stable failure codes |
 | `recommendation_deleted` | Recommendation ID, anonymized user ID, success, and delete latency |
 | `response_formatting` | Final status, repair count, tool counts and quality output |
 
@@ -76,28 +77,25 @@ hidden by an upstream SDK remains absent rather than being guessed.
 
 ## Recommendation evaluation
 
-The deterministic validator is the authoritative correctness gate, including
-required-component completeness. The temperature-zero evaluator records
-occasion, completeness, color, style, explanation, and overall quality signals
-without overriding a deterministic pass. Only a verified unsupported prose
-claim may remain blocking because Python does not inspect prose semantics.
-Phase 13 adds a lightweight summary that can grow with new boolean checks:
+The deterministic validator remains the authoritative machine-checkable gate.
+A valid initial draft then reaches the temperature-zero, tool-free Style Critic.
+Its output contract is deliberately narrow:
 
 ```json
 {
-  "only_owned_items": true,
-  "no_hallucinations": true,
-  "request_match": true,
-  "coherent_outfit": true,
-  "explanation_present": true
+  "approved": true,
+  "issues": [],
+  "repair_instruction": ""
 }
 ```
 
-`recommendation_quality` is written as a Langfuse trace score by normalizing the
-evaluator's 0–10 score to 0–1. Occasion relevance, completeness, color
-coherence, style coherence, and explanation presence are separate scores.
-`hallucination_detected` is recorded as a categorical trace score. Evaluation
-checks meaning and supported evidence, not exact wording.
+Approved output must have empty feedback. Rejected output must contain concise
+issues and one actionable repair instruction, but never a replacement outfit.
+A valid rejection triggers one repair and is not automatically re-evaluated.
+Malformed structured output may make one additional model attempt. Every repair
+is followed by `final_validation`, and no path bypasses deterministic checks.
+Observations store status, stable failure reason, latency, and safe counts—not
+the user request, critic prose, JWTs, model credentials, or wardrobe images.
 
 ## Structured logs
 
@@ -119,13 +117,14 @@ Clients may send `X-Request-ID`; malformed values are replaced. The selected ID
 is returned in the response header. Failed requests are logged and re-raised.
 
 A successful Stylist request emits `stylist_request_completed` with status,
-total latency, tool and model attempt counts, deterministic failures, evaluator
-warnings and scores, and whether those warnings were nonblocking. A Stylist
+total latency, tool and model attempt counts, deterministic failures, and the
+Style Critic approval summary. A Stylist
 failure also emits exactly one sanitized `stylist_request_failed`
 record with `request_id`, `trace_id`, `error_type`, `failing_stage`,
 `duration_ms`, `tool_call_count`, `model_attempt_count`, stable
-`validation_failures` and `evaluator_failures` codes, and schema-bounded
-`evaluator_scores`. Development adds the complete traceback as a separate
+`validation_failures` plus backward-compatible `evaluator_failures` and
+`evaluator_scores` fields carrying only critic status/counts. Development adds
+the complete traceback as a separate
 human-readable error log. Set
 `APP_ENVIRONMENT=production` to suppress that traceback; structured logs remain
 available in every environment.
@@ -150,7 +149,7 @@ Prompt versions are independently configurable:
 CHAT_GUARDRAIL_PROMPT_VERSION=chat-guardrail-v1
 STYLIST_PROMPT_VERSION=stylist-v4
 STYLIST_REPAIR_PROMPT_VERSION=stylist-repair-v2
-EVALUATOR_PROMPT_VERSION=outfit-evaluator-v1
+STYLE_CRITIC_PROMPT_VERSION=style-critic-v1
 ```
 
 ## Inspecting and validating traces

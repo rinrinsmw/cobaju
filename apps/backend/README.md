@@ -47,12 +47,11 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - clearly separated incomplete-wardrobe guidance;
 - one structured chat response and optional Langfuse recommendation traces;
 - mocked chat, grounding, limit, incomplete-wardrobe, and API tests.
-- a separate temperature-0.0 outfit evaluator for occasion, completeness,
-  color, style, and unsupported-claim checks;
+- a separate, tool-free temperature-0.0 Style Critic with an exact structured
+  approval, issues, and repair-instruction contract;
 - database-backed final ID, ownership, category, and missing-item label checks;
 - hallucination outcomes in optional Langfuse validation observations;
-- exactly one tool-free repair after deterministic rejection or a verified
-  unsupported claim;
+- exactly one tool-free repair after deterministic or Style Critic rejection;
 - mocked evaluation, cross-user, invalid-ID, unsupported-claim, and repair tests.
 - a recommendation table populated only after the user explicitly saves a
   final evaluated result;
@@ -93,8 +92,10 @@ The authenticated `POST /chat/recommendations` workflow now includes Phase 11.
 Configure
 `OPENROUTER_CHAT_GUARDRAIL_MODEL` for strict JSON output and
 `OPENROUTER_STYLIST_MODEL` for strict JSON plus Chat Completions tool calling.
-Configure `OPENROUTER_EVALUATOR_MODEL` for strict structured output. The
-classifier and evaluator run at temperature `0.0`; the stylist runs at `0.5`.
+Configure `OPENROUTER_STYLE_CRITIC_MODEL` for strict structured output.
+`OPENROUTER_EVALUATOR_MODEL` remains a deployment-compatible fallback. The
+classifier and Style Critic run at temperature `0.0`; the stylist runs at
+`0.5`.
 
 Explicit prompt injection is rejected before a paid call. Allowed requests run
 one request-scoped session against the trusted current user's MCP process. One
@@ -106,17 +107,18 @@ required-category coverage, and explicit `Not owned:` labels. Candidates that
 fail are sent once to a tool-free repair model together with the original
 structured response, violations, and wardrobe candidates retained from MCP
 tool results. The repair does not reopen MCP, list tools, retrieve again, or
-save. Before evaluation, user-visible messages and reasons are rebuilt from the
+save. Before critique, user-visible messages and reasons are rebuilt from the
 selected cached item names, colors, and categories so warmer prose cannot add
 unsupported wardrobe facts. If a model omits the required-category plan, it is
 reconstructed from the response's selected owned and explicitly missing
-categories before strict validation. If the evaluator still identifies an
-unsupported claim, its exact claim and feedback are supplied to the same repair.
-Evaluator quality scores and warnings are recorded without allowing
-`accepted=false` or `complete=false` to block the response or HTTP 200. If the
-final candidate still has an objective failure, the endpoint returns its
-existing generic HTTP 503 response. Recommendation generation never persists a
-Lookbook entry.
+categories before strict validation. A valid draft then reaches the Style
+Critic, which has no tools and returns only `approved`, `issues`, and
+`repair_instruction`. A rejection supplies that concise feedback to the one
+allowed repair. Malformed structured critic output is retried once, while a
+valid rejection is never automatically re-judged. Deterministic validation
+always runs after repair. If the final candidate still has an objective
+failure, the endpoint returns its existing generic HTTP 503 response.
+Recommendation generation never persists a Lookbook entry.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat/recommendations \

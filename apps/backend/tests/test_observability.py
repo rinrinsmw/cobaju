@@ -26,7 +26,7 @@ from app.observability import (
 )
 from app.schemas.chat import (
     ChatScopeDecision,
-    OutfitEvaluation,
+    StyleCriticEvaluation,
     RecommendedOwnedItem,
     RequiredCategory,
     StylistResponse,
@@ -34,10 +34,6 @@ from app.schemas.chat import (
 from app.schemas.mcp import SaveRecommendationOutput, ToolClothingItem
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import OpenRouterChatScopeClassifier
-from app.services.outfit_evaluator import (
-    DeterministicValidation,
-    evaluate_recommendation_quality,
-)
 from app.services.stylist_agent import (
     StylistAgentError,
     StylistLifecycleMetrics,
@@ -113,32 +109,24 @@ class AllowedClassifier:
 class PassingEvaluator:
     async def evaluate(
         self, user_request: str, candidate: StylistResponse, evidence: list[ClothingItem]
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, evidence
-        return OutfitEvaluation(
-            accepted=True,
-            occasion_appropriate=True,
-            complete=True,
-            colors_compatible=True,
-            styles_compatible=True,
-            evaluation_score=9,
-            feedback="All checks pass.",
+        return StyleCriticEvaluation(
+            approved=True,
+            issues=[],
+            repair_instruction="",
         )
 
 
 class LowSubjectiveEvaluator:
     async def evaluate(
         self, user_request: str, candidate: StylistResponse, evidence: list[ClothingItem]
-    ) -> OutfitEvaluation:
+    ) -> StyleCriticEvaluation:
         del user_request, candidate, evidence
-        return OutfitEvaluation(
-            accepted=False,
-            occasion_appropriate=False,
-            complete=True,
-            colors_compatible=False,
-            styles_compatible=False,
-            evaluation_score=2.5,
-            feedback="The outfit is not stylistically strong.",
+        return StyleCriticEvaluation(
+            approved=False,
+            issues=["The outfit is not stylistically strong."],
+            repair_instruction="Adjust the outfit to match the occasion.",
         )
 
 
@@ -181,7 +169,7 @@ class ObservedRunner:
             if self.fail:
                 raise StylistAgentError("simulated failure")
         with self.observability.observe(
-            "stylist.generate",
+            "stylist_generation",
             as_type="generation",
             metadata={"prompt_version": "stylist-v2"},
         ):
@@ -331,12 +319,15 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
         "stylist_request",
         "guardrail.validate",
         "mcp.get_styling_candidates",
-        "stylist.generate",
-        "recommendation.validate",
-        "evaluator",
+        "stylist_generation",
+        "deterministic_validation",
+        "style_critic",
         "response_formatting",
     ]
-    agent = next(record for record in backend.records if record["name"] == "stylist.generate")
+    agent = next(
+        record for record in backend.records
+        if record["name"] == "stylist_generation"
+    )
     assert agent["metadata"]["prompt_version"] == "stylist-v2"
     formatting = backend.records[-1]["output"]
     assert formatting["tool_invocation_counts"] == {
@@ -346,10 +337,10 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
     assert formatting["tool_call_count"] == 1
     assert formatting["candidate_count"] == 1
     root = backend.records[0]
-    assert root["scores"][0]["name"] == "recommendation_quality"
+    assert root["scores"][0]["name"] == "hallucination_detected"
 
 
-def test_low_subjective_scores_are_recorded_without_blocking_response() -> None:
+def test_critic_rejection_records_one_targeted_repair() -> None:
     backend = RecordingBackend()
     observability = Observability(_settings(), backend=backend)
     engine = create_engine(
@@ -388,14 +379,10 @@ def test_low_subjective_scores_are_recorded_without_blocking_response() -> None:
                 )
 
     assert anyio.run(run).status == "recommendation"
-    assert "recommendation.repair" not in [record["name"] for record in backend.records]
-    root_scores = {
-        score["name"]: score["value"] for score in backend.records[0]["scores"]
-    }
-    assert root_scores["recommendation_quality"] == 0.25
-    assert root_scores["occasion_relevance"] == 0.0
-    assert root_scores["color_coherence"] == 0.0
-    assert root_scores["style_coherence"] == 0.0
+    names = [record["name"] for record in backend.records]
+    assert names.count("style_critic") == 1
+    assert names.count("targeted_repair") == 1
+    assert names.count("final_validation") == 1
 
 
 def test_failed_tool_preserves_failed_span() -> None:
@@ -484,28 +471,17 @@ def test_request_middleware_logs_unhandled_exceptions(
     assert payloads[1]["status"] == 500
 
 
-def test_quality_evaluation_checks_meaning_not_exact_wording() -> None:
-    quality = evaluate_recommendation_quality(
-        _response(),
-        OutfitEvaluation(
-            accepted=True,
-            occasion_appropriate=True,
-            complete=True,
-            colors_compatible=True,
-            styles_compatible=True,
-            evaluation_score=9,
-            feedback="Good recommendation.",
-        ),
-        DeterministicValidation(violations=[]),
+def test_style_critic_approval_has_empty_feedback() -> None:
+    result = StyleCriticEvaluation(
+        approved=True,
+        issues=[],
+        repair_instruction="",
     )
 
-    assert quality.passed is True
-    assert quality.as_dict() == {
-        "only_owned_items": True,
-        "no_hallucinations": True,
-        "request_match": True,
-        "coherent_outfit": True,
-        "explanation_present": True,
+    assert result.model_dump() == {
+        "approved": True,
+        "issues": [],
+        "repair_instruction": "",
     }
 
 

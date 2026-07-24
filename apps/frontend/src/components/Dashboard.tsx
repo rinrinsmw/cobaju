@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { apiRequest, type ClothingItem } from '../api'
 import type { Page } from '../data'
 
 interface Props {
@@ -30,11 +32,61 @@ const features = [
   { label: 'Style memory', desc: 'Learns what works for you over time.' },
 ]
 
+interface RecommendationSummary {
+  selected_item_ids: number[]
+  created_at: string
+}
+
+function startOfCurrentWeek() {
+  const start = new Date()
+  const daysSinceMonday = (start.getDay() + 6) % 7
+  start.setDate(start.getDate() - daysSinceMonday)
+  start.setHours(0, 0, 0, 0)
+  return start
+}
+
 export default function Dashboard({ onNavigate }: Props) {
   const [query, setQuery] = useState('')
+  const hasQuery = query.trim().length > 0
+  const wardrobe = useQuery({
+    queryKey: ['wardrobe'],
+    queryFn: () => apiRequest<ClothingItem[]>('/wardrobe/items'),
+  })
+  const history = useQuery({
+    queryKey: ['history'],
+    queryFn: () => apiRequest<RecommendationSummary[]>('/recommendations'),
+  })
+
+  const wardrobeItems = wardrobe.data ?? []
+  const currentWardrobeIds = new Set(wardrobeItems.map(item => item.id))
+  const usedWardrobeIds = new Set(
+    (history.data ?? [])
+      .flatMap(outfit => outfit.selected_item_ids)
+      .filter(itemId => currentWardrobeIds.has(itemId)),
+  )
+  const now = Date.now()
+  const weekStartedAt = startOfCurrentWeek().getTime()
+  const outfitsThisWeek = (history.data ?? []).filter(outfit => {
+    const createdAt = new Date(outfit.created_at).getTime()
+    return createdAt >= weekStartedAt && createdAt <= now
+  }).length
+  const wardrobeUtilised = wardrobeItems.length === 0
+    ? 0
+    : Math.round((usedWardrobeIds.size / wardrobeItems.length) * 100)
+
+  const wardrobeValue = wardrobe.isPending
+    ? '…'
+    : wardrobe.isError ? '—' : String(wardrobeItems.length)
+  const outfitsValue = history.isPending
+    ? '…'
+    : history.isError ? '—' : String(outfitsThisWeek)
+  const utilisationValue = wardrobe.isPending || history.isPending
+    ? '…'
+    : wardrobe.isError || history.isError ? '—' : `${wardrobeUtilised}%`
 
   const handleAsk = () => {
-    onNavigate('stylist', query.trim() || 'Smart casual outfit')
+    if (!hasQuery) return
+    onNavigate('stylist', query.trim())
   }
 
   return (
@@ -74,16 +126,6 @@ export default function Dashboard({ onNavigate }: Props) {
             <img src={p.url} alt={p.alt} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
           </div>
         ))}
-
-        {/* Small decorative label */}
-        <div style={{
-          position: 'absolute', top: 100, left: 60,
-          fontFamily: 'DM Sans, sans-serif', fontSize: 11,
-          letterSpacing: '0.14em', textTransform: 'uppercase',
-          color: 'rgba(255,255,255,0.3)',
-        }}>
-          AI Personal Stylist — 2025
-        </div>
 
         {/* Hero text */}
         <div style={{ position: 'relative', zIndex: 3, padding: '0 60px' }}>
@@ -140,13 +182,14 @@ export default function Dashboard({ onNavigate }: Props) {
                 paddingRight: 12,
               }}
             />
-            <button onClick={handleAsk} style={{
+            <button onClick={handleAsk} disabled={!hasQuery} style={{
               fontFamily: 'DM Sans, sans-serif', fontSize: 13, fontWeight: 600,
               background: '#f0ece4', color: '#100f0d',
               border: 'none', borderRadius: 999,
-              padding: '10px 22px', cursor: 'pointer',
+              padding: '10px 22px', cursor: hasQuery ? 'pointer' : 'not-allowed',
+              opacity: hasQuery ? 1 : 0.45,
               whiteSpace: 'nowrap',
-              transition: 'transform 0.15s',
+              transition: 'transform 0.15s, opacity 0.15s',
             }}>
               Style me →
             </button>
@@ -187,10 +230,9 @@ export default function Dashboard({ onNavigate }: Props) {
         flexWrap: 'wrap',
       }}>
         {[
-          { n: '11', label: 'pieces in wardrobe' },
-          { n: '3', label: 'outfits this week' },
-          { n: '9.4', label: 'avg. outfit score' },
-          { n: '73%', label: 'wardrobe utilised' },
+          { n: wardrobeValue, label: 'pieces in wardrobe' },
+          { n: outfitsValue, label: 'outfits this week' },
+          { n: utilisationValue, label: 'wardrobe utilised' },
         ].map(s => (
           <div key={s.label} style={{ textAlign: 'center' }}>
             <div style={{
@@ -411,10 +453,6 @@ export default function Dashboard({ onNavigate }: Props) {
         }}>
           "The most sustainable wardrobe is the one you already have."
         </blockquote>
-        <p style={{
-          fontFamily: 'DM Sans, sans-serif', fontSize: 13,
-          color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em',
-        }}>— Cobaju, 2025</p>
         <button onClick={() => onNavigate('wardrobe')} style={{
           marginTop: 48,
           fontFamily: 'DM Sans, sans-serif', fontSize: 13, fontWeight: 600,

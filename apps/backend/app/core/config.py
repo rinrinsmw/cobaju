@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     openrouter_chat_guardrail_model: str = ""
     openrouter_stylist_model: str = ""
     openrouter_evaluator_model: str = ""
+    openrouter_style_critic_model: str = ""
     openrouter_timeout_seconds: float = 60.0
     guardrail_temperature: float = 0.0
     vision_temperature: float = 0.1
@@ -39,12 +40,14 @@ class Settings(BaseSettings):
     stylist_temperature: float = 0.5
     stylist_repair_temperature: float = 0.1
     evaluator_temperature: float = 0.0
+    style_critic_temperature: float = 0.0
     stylist_max_turns: int = Field(default=8, ge=1, le=20)
     stylist_max_tool_calls: int = Field(default=8, ge=1, le=30)
     chat_guardrail_prompt_version: str = "chat-guardrail-v1"
     stylist_prompt_version: str = "stylist-v4"
     stylist_repair_prompt_version: str = "stylist-repair-v2"
     evaluator_prompt_version: str = "outfit-evaluator-v1"
+    style_critic_prompt_version: str = "style-critic-v1"
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr = SecretStr("")
@@ -105,6 +108,22 @@ class Settings(BaseSettings):
         if chroma_path.is_absolute():
             return chroma_path
         return (BACKEND_DIR / chroma_path).resolve()
+
+    @property
+    def resolved_style_critic_model(self) -> str:
+        """Use the new critic setting while honoring existing deployments."""
+
+        return self.openrouter_style_critic_model or self.openrouter_evaluator_model
+
+    @property
+    def resolved_style_critic_prompt_version(self) -> str:
+        """Use a custom legacy prompt version when a deployment set one."""
+
+        if self.style_critic_prompt_version != "style-critic-v1":
+            return self.style_critic_prompt_version
+        if self.evaluator_prompt_version != "outfit-evaluator-v1":
+            return self.evaluator_prompt_version
+        return self.style_critic_prompt_version
 
 
 @lru_cache

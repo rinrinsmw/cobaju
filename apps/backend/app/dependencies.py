@@ -15,7 +15,7 @@ from app.models.user import User
 from app.observability import bind_authenticated_user, get_observability
 from app.services.mcp_client import open_user_scoped_mcp_session
 from app.services.chat_guardrails import OpenRouterChatScopeClassifier
-from app.services.outfit_evaluator import OpenAIAgentsOutfitEvaluator
+from app.services.style_critic import OpenAIAgentsStyleCritic
 from app.services.stylist_agent import OpenAIAgentsStylistRunner
 from app.services.vector_store import WardrobeVectorStore, create_wardrobe_vector_store
 
@@ -38,10 +38,10 @@ def get_stylist_runner() -> OpenAIAgentsStylistRunner:
 
 
 @lru_cache
-def get_outfit_evaluator() -> OpenAIAgentsOutfitEvaluator:
-    """Return the separate evaluator agent; tests may override it."""
+def get_outfit_evaluator() -> OpenAIAgentsStyleCritic:
+    """Return the separate Style Critic; the old dependency name is stable."""
 
-    return OpenAIAgentsOutfitEvaluator(get_settings(), get_observability())
+    return OpenAIAgentsStyleCritic(get_settings(), get_observability())
 
 
 @lru_cache

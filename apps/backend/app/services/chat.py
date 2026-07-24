@@ -18,15 +18,14 @@ from app.observability import (
 )
 from app.schemas.chat import (
     ChatScopeDecision,
-    OutfitEvaluation,
+    StyleCriticEvaluation,
     StylistApiResponse,
     StylistResponse,
 )
 from app.services.chat_guardrails import ChatScopeClassifier, contains_prompt_injection
-from app.services.outfit_evaluator import (
-    OutfitEvaluator,
+from app.services.style_critic import (
     RecommendationValidationError,
-    evaluate_recommendation_quality,
+    StyleCritic,
     validate_recommendation,
 )
 from app.services.stylist_agent import StylistRunOutcome, StylistRunner
@@ -62,7 +61,7 @@ async def create_stylist_response(
     current_user: User,
     classifier: ChatScopeClassifier,
     runner: StylistRunner,
-    evaluator: OutfitEvaluator,
+    evaluator: StyleCritic,
     settings: Settings,
     observability: Observability | None = None,
 ) -> StylistResponse:
@@ -99,10 +98,10 @@ async def create_stylist_response(
         if not decision.allowed:
             return _blocked_response(decision)
 
-        # The session context encloses generation, optional repair, final
-        # validation. It is entered exactly once.
+        # One request-scoped MCP session encloses generation and at most one
+        # repair. The Style Critic itself has no tools.
         async with runner.open_request(current_user) as stylist_request:
-            set_failing_stage("stylist.generate")
+            set_failing_stage("stylist_generation")
             outcome = await stylist_request.run(message)
             structured_log(
                 "stylist_initial_recommendation",
@@ -110,213 +109,208 @@ async def create_stylist_response(
             )
 
             tool_counts = Counter(outcome.tool_invocation_counts)
-            last_hallucination_detected = False
-            last_validation_result: dict[str, object] = {}
+            evidence = _cached_item_evidence(outcome, current_user)
+            grounding_violations = _grounding_violations(outcome)
+            deterministic = validate_recommendation(outcome.response, evidence)
+            violations = grounding_violations + deterministic.violations
+            record_recommendation_diagnostics(
+                validation_failures=_failure_codes(violations),
+                evaluator_failures=[],
+                evaluator_scores={},
+            )
+            with telemetry.observe(
+                "deterministic_validation",
+                input={"candidate_item_count": len(outcome.response.owned_items)},
+                output={
+                    "status": "approved" if not violations else "rejected",
+                    "failure_reason": _failure_codes(violations),
+                },
+                metadata={"candidate_source": "generation"},
+            ):
+                pass
 
-            for attempt in range(2):
-                evidence = _cached_item_evidence(outcome, current_user)
-                grounding_violations = _grounding_violations(outcome)
-                deterministic = validate_recommendation(outcome.response, evidence)
-                violations = grounding_violations + deterministic.violations
-                validation_failure_codes = _failure_codes(violations)
-                record_recommendation_diagnostics(
-                    validation_failures=validation_failure_codes,
-                    evaluator_failures=[],
-                    evaluator_scores={},
-                )
-
+            critic_result: StyleCriticEvaluation | None = None
+            repair_reasons = list(violations)
+            if not violations:
                 with telemetry.observe(
-                    "recommendation.validate",
-                    input={"candidate_item_count": len(outcome.response.owned_items)},
-                    output={
-                        "accepted": not violations,
-                        "violations": violations,
-                        "hallucination_detected": bool(violations),
+                    "style_critic",
+                    as_type="generation",
+                    model=settings.resolved_style_critic_model,
+                    model_parameters={
+                        "temperature": settings.style_critic_temperature
                     },
                     metadata={
-                        "attempt": attempt + 1,
-                        "candidate_source": "generation" if attempt == 0 else "repair",
+                        "prompt_version": (
+                            settings.resolved_style_critic_prompt_version
+                        ),
                     },
-                ):
-                    pass
-
-                evaluation: OutfitEvaluation | None = None
-                quality = None
-                if not violations:
-                    with telemetry.observe(
-                        "evaluator",
-                        as_type="generation",
-                        model=settings.openrouter_evaluator_model,
-                        model_parameters={"temperature": settings.evaluator_temperature},
-                        metadata={
-                            "attempt": attempt + 1,
-                            "prompt_version": settings.evaluator_prompt_version,
-                        },
-                    ):
-                        set_failing_stage("evaluator")
-                        evaluation = await evaluator.evaluate(
+                ) as critic_observation:
+                    set_failing_stage("style_critic")
+                    try:
+                        critic_result = await evaluator.evaluate(
                             message, outcome.response, evidence
                         )
-                    evaluator_failures = _evaluator_failure_codes(evaluation)
-                    # Evaluator quality judgments are observability signals, not
-                    # a second authority for rules already checked in Python.
-                    # A verified unsupported claim remains blocking because the
-                    # deterministic validator does not inspect prose semantics.
-                    violations = _blocking_evaluator_failure_codes(evaluation)
-                    record_recommendation_diagnostics(
-                        validation_failures=[],
-                        evaluator_failures=evaluator_failures,
-                        evaluator_scores=_sanitized_evaluator_scores(evaluation),
-                    )
-                    quality = evaluate_recommendation_quality(
-                        outcome.response, evaluation, deterministic
-                    )
-                    if request_observation is not None:
-                        _record_evaluator_scores(
-                            request_observation, evaluation, quality.explanation_present
-                        )
-
-                last_validation_result = {
-                    "accepted": not violations,
-                    "grounding_violations": grounding_violations,
-                    "deterministic_violations": deterministic.violations,
-                    "evaluator_violations": (
-                        _evaluator_failure_codes(evaluation) if evaluation else []
-                    ),
-                    "blocking_evaluator_violations": (
-                        _blocking_evaluator_failure_codes(evaluation)
-                        if evaluation
-                        else []
-                    ),
-                    "evaluator_result": (
-                        evaluation.model_dump(mode="json") if evaluation else None
-                    ),
-                    "final_blocking_violations": violations,
-                    "evidence_item_ids": [
-                        item.id for item in evidence if item.id is not None
-                    ],
-                }
-
-                last_hallucination_detected = bool(
-                    deterministic.violations
-                    or grounding_violations
-                    or (evaluation and evaluation.unsupported_claims)
-                )
-                if not violations:
-                    if evaluation is None or quality is None:
-                        raise RecommendationValidationError(
-                            "Recommendation was not evaluated"
-                        )
-                    if current_user.id is None:
-                        raise RecommendationValidationError(
-                            "Authenticated user has no persisted ID"
-                        )
-
-                    record_recommendation_diagnostics(
-                        tool_call_count=sum(tool_counts.values())
-                    )
-
-                    metrics = stylist_request.metrics.as_dict()
-                    if request_observation is not None:
-                        request_observation.score_trace(
-                            name="hallucination_detected", value="false"
-                        )
-                        request_observation.update(
+                    except Exception as error:
+                        if critic_observation is not None:
+                            critic_observation.update(
+                                output={
+                                    "status": "failed",
+                                    "failure_reason": type(error).__name__,
+                                }
+                            )
+                        raise
+                    if critic_observation is not None:
+                        critic_observation.update(
                             output={
-                                "status": outcome.response.status,
-                                "retry_count": attempt,
-                                "repair_count": attempt,
-                                "tool_invocation_counts": dict(tool_counts),
-                                "validation_failures": [],
-                                "evaluator_failures": evaluator_failures,
-                                "evaluator_nonblocking": bool(evaluator_failures),
-                                "evaluator_scores": _sanitized_evaluator_scores(
-                                    evaluation
+                                "status": (
+                                    "approved"
+                                    if critic_result.approved
+                                    else "rejected"
                                 ),
-                                **metrics,
+                                "failure_reason": (
+                                    None
+                                    if critic_result.approved
+                                    else "STYLE_CRITIC_REJECTED"
+                                ),
+                                "issue_count": len(critic_result.issues),
                             }
                         )
-                    with telemetry.observe(
-                        "response_formatting",
-                        output={
-                            "status": outcome.response.status,
-                            "retry_count": attempt,
-                            "repair_count": attempt,
-                            "hallucination_detected": False,
-                            "evaluation_score": evaluation.evaluation_score,
-                            "tool_invocation_counts": dict(tool_counts),
-                            "validation_failures": [],
-                            "evaluator_failures": evaluator_failures,
-                            "evaluator_nonblocking": bool(evaluator_failures),
-                            "evaluator_scores": _sanitized_evaluator_scores(evaluation),
-                            "quality": quality.as_dict(),
-                            **metrics,
-                        },
-                    ):
-                        return StylistApiResponse(
-                            **outcome.response.model_dump(),
-                            lookbook_save_token=create_recommendation_save_token(
-                                user_id=current_user.id,
-                                user_request=message,
-                                item_ids=[
-                                    item.item_id
-                                    for item in outcome.response.owned_items
-                                ],
-                                explanation=outcome.response.message,
-                                evaluation_score=evaluation.evaluation_score,
-                            ),
-                        )
-
-                if attempt == 0:
-                    repair_violations = list(violations)
-                    if evaluation is not None and evaluation.unsupported_claims:
-                        repair_violations.extend(
-                            f"UNSUPPORTED_CLAIM: {claim}"
-                            for claim in evaluation.unsupported_claims
-                        )
-                        if evaluation.feedback:
-                            repair_violations.append(
-                                f"EVALUATOR_FEEDBACK: {evaluation.feedback}"
-                            )
-                    with telemetry.observe(
-                        "recommendation.repair",
-                        as_type="generation",
-                        input={
-                            "violation_count": len(violations),
-                            "candidate_count": len(outcome.available_items),
-                            "cache_reused": True,
-                        },
-                        model=settings.openrouter_stylist_model,
-                        model_parameters={
-                            "temperature": settings.stylist_repair_temperature
-                        },
-                        metadata={
-                            "prompt_version": settings.stylist_repair_prompt_version,
-                        },
-                    ):
-                        set_failing_stage("recommendation.repair")
-                        repaired = await stylist_request.repair(
-                            message, outcome.response, repair_violations
-                        )
-                    structured_log(
-                        "stylist_repaired_recommendation",
-                        recommendation=_recommendation_log_payload(repaired),
-                    )
-                    outcome.response = repaired
-
-            if request_observation is not None:
-                request_observation.score_trace(
-                    name="hallucination_detected",
-                    value="true" if last_hallucination_detected else "false",
+                critic_failures = (
+                    [] if critic_result.approved else ["STYLE_CRITIC_REJECTED"]
                 )
-                request_observation.update(output=stylist_request.metrics.as_dict())
+                record_recommendation_diagnostics(
+                    validation_failures=[],
+                    evaluator_failures=critic_failures,
+                    evaluator_scores={
+                        "approved": critic_result.approved,
+                        "issue_count": len(critic_result.issues),
+                    },
+                )
+                if critic_result.approved:
+                    return _finalize_response(
+                        message=message,
+                        current_user=current_user,
+                        response=outcome.response,
+                        tool_counts=tool_counts,
+                        metrics=stylist_request.metrics.as_dict(),
+                        repaired=False,
+                        critic_result=critic_result,
+                        request_observation=request_observation,
+                        telemetry=telemetry,
+                    )
+                repair_reasons = [
+                    *(f"STYLE_CRITIC_ISSUE: {issue}" for issue in critic_result.issues),
+                    (
+                        "STYLE_CRITIC_REPAIR_INSTRUCTION: "
+                        f"{critic_result.repair_instruction}"
+                    ),
+                ]
+
+            with telemetry.observe(
+                "targeted_repair",
+                as_type="generation",
+                input={
+                    "violation_count": len(repair_reasons),
+                    "candidate_count": len(outcome.available_items),
+                    "cache_reused": True,
+                },
+                model=settings.openrouter_stylist_model,
+                model_parameters={
+                    "temperature": settings.stylist_repair_temperature
+                },
+                metadata={
+                    "prompt_version": settings.stylist_repair_prompt_version,
+                },
+            ) as repair_observation:
+                set_failing_stage("targeted_repair")
+                try:
+                    repaired = await stylist_request.repair(
+                        message, outcome.response, repair_reasons
+                    )
+                except Exception as error:
+                    if repair_observation is not None:
+                        repair_observation.update(
+                            output={
+                                "status": "failed",
+                                "failure_reason": type(error).__name__,
+                            }
+                        )
+                    raise
+                if repair_observation is not None:
+                    repair_observation.update(
+                        output={"status": "completed", "failure_reason": None}
+                    )
             structured_log(
-                "stylist_recommendation_validation_failed",
-                recommendation=_recommendation_log_payload(outcome.response),
-                validation=last_validation_result,
+                "stylist_repaired_recommendation",
+                recommendation=_recommendation_log_payload(repaired),
             )
-            raise RecommendationValidationError(
-                "Recommendation remained invalid after one targeted repair"
+            outcome.response = repaired
+
+            final_evidence = _cached_item_evidence(outcome, current_user)
+            final_grounding = _grounding_violations(outcome)
+            final_deterministic = validate_recommendation(
+                outcome.response, final_evidence
+            )
+            final_violations = final_grounding + final_deterministic.violations
+            record_recommendation_diagnostics(
+                validation_failures=_failure_codes(final_violations),
+                tool_call_count=sum(tool_counts.values()),
+            )
+            with telemetry.observe(
+                "final_validation",
+                input={"candidate_item_count": len(outcome.response.owned_items)},
+                output={
+                    "status": "approved" if not final_violations else "rejected",
+                    "failure_reason": _failure_codes(final_violations),
+                },
+                metadata={"candidate_source": "repair"},
+            ):
+                pass
+
+            if final_violations:
+                if request_observation is not None:
+                    request_observation.score_trace(
+                        name="hallucination_detected", value="true"
+                    )
+                    request_observation.update(
+                        output=stylist_request.metrics.as_dict()
+                    )
+                structured_log(
+                    "stylist_recommendation_validation_failed",
+                    recommendation=_recommendation_log_payload(outcome.response),
+                    validation={
+                        "accepted": False,
+                        "grounding_violations": final_grounding,
+                        "deterministic_violations": (
+                            final_deterministic.violations
+                        ),
+                        "style_critic_result": (
+                            critic_result.model_dump(mode="json")
+                            if critic_result
+                            else None
+                        ),
+                        "final_blocking_violations": final_violations,
+                        "evidence_item_ids": [
+                            item.id
+                            for item in final_evidence
+                            if item.id is not None
+                        ],
+                    },
+                )
+                raise RecommendationValidationError(
+                    "Recommendation remained invalid after one targeted repair"
+                )
+
+            return _finalize_response(
+                message=message,
+                current_user=current_user,
+                response=outcome.response,
+                tool_counts=tool_counts,
+                metrics=stylist_request.metrics.as_dict(),
+                repaired=True,
+                critic_result=critic_result,
+                request_observation=request_observation,
+                telemetry=telemetry,
             )
 
 
@@ -378,62 +372,66 @@ def _failure_codes(failures: list[str]) -> list[str]:
     return list(dict.fromkeys(failure.split(":", 1)[0] for failure in failures))
 
 
-def _evaluator_failure_codes(evaluation: OutfitEvaluation) -> list[str]:
-    """Return every failed evaluator dimension, including nonblocking quality."""
+def _finalize_response(
+    *,
+    message: str,
+    current_user: User,
+    response: StylistResponse,
+    tool_counts: Counter[str],
+    metrics: dict[str, int | float | bool],
+    repaired: bool,
+    critic_result: StyleCriticEvaluation | None,
+    request_observation: Observation | None,
+    telemetry: Observability,
+) -> StylistApiResponse:
+    """Build the unchanged API response after all required gates pass."""
 
-    checks = {
-        "EVALUATOR_OCCASION_RELEVANCE_LOW": evaluation.occasion_appropriate,
-        "EVALUATOR_REQUIRED_COMPONENTS_MISSING": evaluation.complete,
-        "EVALUATOR_COLOR_COHERENCE_LOW": evaluation.colors_compatible,
-        "EVALUATOR_STYLE_COHERENCE_LOW": evaluation.styles_compatible,
+    if current_user.id is None:
+        raise RecommendationValidationError(
+            "Authenticated user has no persisted ID"
+        )
+    critic_summary = {
+        "approved": critic_result.approved if critic_result else None,
+        "issue_count": len(critic_result.issues) if critic_result else 0,
     }
-    failures = [code for code, passed in checks.items() if not passed]
-    if evaluation.unsupported_claims:
-        failures.append("EVALUATOR_UNSUPPORTED_CLAIMS")
-    if not evaluation.accepted:
-        failures.append("EVALUATOR_OVERALL_REJECTED")
-    if evaluation.accepted and failures:
-        failures.append("EVALUATOR_VERDICT_INCONSISTENT")
-    return failures
+    if request_observation is not None:
+        request_observation.score_trace(
+            name="hallucination_detected", value="false"
+        )
+        request_observation.update(
+            output={
+                "status": response.status,
+                "retry_count": int(repaired),
+                "repair_count": int(repaired),
+                "tool_invocation_counts": dict(tool_counts),
+                "validation_failures": [],
+                "style_critic": critic_summary,
+                **metrics,
+            }
+        )
 
-
-def _blocking_evaluator_failure_codes(evaluation: OutfitEvaluation) -> list[str]:
-    """Block only semantic safety failures not already validated in Python."""
-
-    failures: list[str] = []
-    if evaluation.unsupported_claims:
-        failures.append("EVALUATOR_UNSUPPORTED_CLAIMS")
-    return failures
-
-
-def _sanitized_evaluator_scores(
-    evaluation: OutfitEvaluation,
-) -> dict[str, bool | float | int]:
-    return {
-        "accepted": evaluation.accepted,
-        "occasion_appropriate": evaluation.occasion_appropriate,
-        "complete": evaluation.complete,
-        "colors_compatible": evaluation.colors_compatible,
-        "styles_compatible": evaluation.styles_compatible,
-        "evaluation_score": evaluation.evaluation_score,
-        "unsupported_claim_count": len(evaluation.unsupported_claims),
-    }
-
-
-def _record_evaluator_scores(
-    observation: Observation,
-    evaluation: OutfitEvaluation,
-    explanation_present: bool,
-) -> None:
-    """Record evaluator quality dimensions without making them HTTP blockers."""
-
-    scores: dict[str, float] = {
-        "recommendation_quality": evaluation.evaluation_score / 10,
-        "occasion_relevance": float(evaluation.occasion_appropriate),
-        "outfit_completeness": float(evaluation.complete),
-        "color_coherence": float(evaluation.colors_compatible),
-        "style_coherence": float(evaluation.styles_compatible),
-        "explanation_present": float(explanation_present),
-    }
-    for name, value in scores.items():
-        observation.score_trace(name=name, value=value)
+    with telemetry.observe(
+        "response_formatting",
+        output={
+            "status": response.status,
+            "retry_count": int(repaired),
+            "repair_count": int(repaired),
+            "hallucination_detected": False,
+            "tool_invocation_counts": dict(tool_counts),
+            "validation_failures": [],
+            "style_critic": critic_summary,
+            **metrics,
+        },
+    ):
+        return StylistApiResponse(
+            **response.model_dump(),
+            lookbook_save_token=create_recommendation_save_token(
+                user_id=current_user.id,
+                user_request=message,
+                item_ids=[item.item_id for item in response.owned_items],
+                explanation=response.message,
+                # The critic contract deliberately has no user-facing score.
+                # Keep the existing signed Lookbook payload shape unchanged.
+                evaluation_score=10.0,
+            ),
+        )
