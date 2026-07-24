@@ -9,7 +9,11 @@ from sqlmodel import Session
 from app.core.config import Settings
 from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.observability import Observability
-from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
+from app.schemas.wardrobe import (
+    ClothingGuardrailDecision,
+    ClothingGuardrailResult,
+    ClothingMetadata,
+)
 from app.services.wardrobe import (
     mark_item_processing,
     save_generated_metadata,
@@ -51,10 +55,10 @@ def analyze_clothing_item(
     image_path: Path,
     provider: ClothingVisionProvider,
     settings: Settings,
-) -> tuple[ClothingItem, str | None]:
+) -> tuple[ClothingItem, ClothingGuardrailDecision | None]:
     """Run guardrail then metadata analysis and persist a reviewable draft.
 
-    The returned optional path identifies a terminal content rejection. The
+    The returned optional decision identifies a terminal content rejection. The
     worker owns storage and database cleanup so it can keep those operations
     ordered and retryable.
     """
@@ -79,8 +83,11 @@ def analyze_clothing_item(
             ):
                 guardrail = provider.classify_image(image_path)
 
-            if not guardrail.is_clothing:
-                return item, item.original_image_path
+            if not guardrail.allows_metadata_extraction:
+                rejection = guardrail.decision
+                if rejection == ClothingGuardrailDecision.VALID_GARMENT_PHOTO:
+                    rejection = ClothingGuardrailDecision.INVALID_IMAGE
+                return item, rejection
 
             with tracer.observation(
                 "vision_analysis",

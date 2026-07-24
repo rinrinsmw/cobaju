@@ -99,7 +99,9 @@ def rejected_upload_response() -> HTTPException:
         detail={
             "code": "NO_CLEAR_CLOTHING_ITEM",
             "message": (
-                "Cobaju could not identify one clear clothing item in this image."
+                "Please upload a clear photo of a real clothing item. "
+                "Illustrations, screenshots, memes, and photos where clothing "
+                "is not the main subject are not supported."
             ),
         },
     )

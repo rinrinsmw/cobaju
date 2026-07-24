@@ -104,14 +104,14 @@ def run_clothing_processing(
         mark_item_failed(session, item)
         return "failed"
 
-    _, rejected_path = analyze_clothing_item(
+    _, guardrail_rejection = analyze_clothing_item(
         session,
         item,
         image_path,
         provider,
         settings,
     )
-    if rejected_path is not None:
+    if guardrail_rejection is not None:
         # Delete storage first. If it fails, the still-referenced database row
         # lets a Celery retry attempt the same idempotent cleanup again.
         temporary_upload = item.is_temporary_upload
@@ -120,6 +120,7 @@ def run_clothing_processing(
             "clothing_upload_rejected",
             item_id=item_id,
             code="NO_CLEAR_CLOTHING_ITEM",
+            guardrail_decision=guardrail_rejection.value,
             temporary_upload=temporary_upload,
         )
         return "rejected"

@@ -210,12 +210,24 @@ storage. An existing item accepts only one image.
 
 The analysis endpoint claims an item as `processing`, sends its database ID to
 Redis, and returns HTTP 202. The Celery worker first runs a temperature-0.0
-clothing guardrail. When a normal new upload is rejected, the worker deletes
-the image and its internal database row. A pre-existing successful wardrobe
-item is preserved if a newly attached image is rejected. Accepted images go to
-the configured vision model at temperature 0.1 and produce only `name`,
-`category`, `color`, and optional `description`. Pydantic validates these
-fields before saving. Poll
+photographic garment guardrail with exactly three decisions:
+`valid_garment_photo`, `invalid_image`, and `uncertain`. Only a real photograph
+with one clearly visible physical garment as its primary subject is valid;
+clothing worn incidentally by a person does not qualify. Illustrations,
+screenshots, artwork, portraits, and unrelated subjects are invalid. Ambiguous,
+obscured, or heavily cropped garment images are uncertain. Only
+`valid_garment_photo` continues to metadata extraction. The structured result
+also records `image_medium`, `primary_subject`, and `garment_visibility`.
+Backend validation requires those fields to agree that the upload is a real
+photograph with a clear physical garment as its primary subject, so a mistaken
+valid decision cannot bypass contradictory evidence.
+
+When a normal new upload is invalid or uncertain, the worker deletes the image
+and its internal database row. A pre-existing successful wardrobe item is
+preserved if a newly attached image is rejected. Accepted images go to the
+configured vision model at temperature 0.1 and produce only `name`, `category`,
+`color`, and optional `description`. Pydantic validates these fields before
+saving. Poll
 `GET /wardrobe/items/{item_id}/status?analysis_token=TOKEN`; successful analysis
 reports `completed` with `needs_confirmation: true`. After terminal content
 rejection, the owner-bound token lets this endpoint return HTTP 422 with code

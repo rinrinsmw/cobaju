@@ -1,5 +1,7 @@
 """Typed request and response bodies for wardrobe endpoints."""
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.clothing_item import ClothingCategory, ProcessingStatus
@@ -120,13 +122,60 @@ class WardrobeSearchResultRead(ClothingItemFields):
     distance: float
 
 
-class ClothingGuardrailResult(BaseModel):
-    """Strict result returned by the inexpensive clothing guardrail."""
+class ClothingGuardrailDecision(StrEnum):
+    """The only outcomes the upload guardrail may return."""
 
-    is_clothing: bool
+    VALID_GARMENT_PHOTO = "valid_garment_photo"
+    INVALID_IMAGE = "invalid_image"
+    UNCERTAIN = "uncertain"
+
+
+class ImageMedium(StrEnum):
+    """Whether the upload is a photograph rather than artwork or a screenshot."""
+
+    REAL_PHOTOGRAPH = "real_photograph"
+    NON_PHOTOGRAPHIC = "non_photographic"
+    UNCERTAIN = "uncertain"
+
+
+class ImagePrimarySubject(StrEnum):
+    """The visually dominant subject, independent of visible clothing."""
+
+    PHYSICAL_GARMENT = "physical_garment"
+    PERSON_OR_FACE = "person_or_face"
+    MULTIPLE_OR_UNRELATED = "multiple_or_unrelated"
+    UNCERTAIN = "uncertain"
+
+
+class GarmentVisibility(StrEnum):
+    """Whether one physical garment can be identified from visible evidence."""
+
+    CLEAR = "clear"
+    UNCLEAR = "unclear"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ClothingGuardrailResult(BaseModel):
+    """Strict photographic-garment decision returned by the guardrail."""
+
+    decision: ClothingGuardrailDecision
+    image_medium: ImageMedium
+    primary_subject: ImagePrimarySubject
+    garment_visibility: GarmentVisibility
     reason: str = Field(min_length=1, max_length=200)
 
     model_config = ConfigDict(extra="forbid")
+
+    @property
+    def allows_metadata_extraction(self) -> bool:
+        """Require consistent evidence in addition to the model's decision."""
+
+        return (
+            self.decision == ClothingGuardrailDecision.VALID_GARMENT_PHOTO
+            and self.image_medium == ImageMedium.REAL_PHOTOGRAPH
+            and self.primary_subject == ImagePrimarySubject.PHYSICAL_GARMENT
+            and self.garment_visibility == GarmentVisibility.CLEAR
+        )
 
 
 class ClothingMetadata(ClothingItemFields):

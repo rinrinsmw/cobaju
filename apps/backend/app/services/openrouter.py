@@ -32,11 +32,30 @@ class OpenRouterVisionProvider:
 
     def classify_image(self, image_path: Path) -> ClothingGuardrailResult:
         prompt = (
-            "Decide whether this image contains exactly one clearly visible main "
-            "clothing, footwear, bag, or fashion-accessory item. Reject selfies, "
-            "people wearing an outfit, multiple main items, food, pets, documents, "
-            "screenshots, furniture, unsafe content, and unclear images. Base the "
-            "decision only on visible evidence."
+            "Classify this upload using the required evidence fields. Evaluate "
+            "image_medium first, before identifying any clothes. Use "
+            "real_photograph only for a camera photograph of a real scene. Use "
+            "non_photographic for every cartoon, illustration, vector drawing, "
+            "painting, anime image, meme, poster, screenshot, generated artwork, "
+            "3D render, or product drawing, even when the depicted clothing looks "
+            "realistic. Next identify the visually dominant primary_subject, not "
+            "the most interesting clothing category. A visible person wearing "
+            "clothes is person_or_face when the person, face, pose, or activity is "
+            "the main composition. Do not call their shirt a physical_garment "
+            "primary subject merely because its category and colour are visible. "
+            "For example, a drawn or cartoon person wearing a clear white button-up "
+            "shirt is non_photographic, person_or_face, and invalid_image. "
+            "valid_garment_photo requires all three facts: image_medium is "
+            "real_photograph, primary_subject is physical_garment, and "
+            "garment_visibility is clear enough to identify category and colour. "
+            "A real laid-flat garment or garment on a hanger may qualify. Return "
+            "invalid_image for non-photographic media, a person or face as primary, "
+            "incidental clothing, multiple unrelated subjects, unsafe content, or "
+            "no physical garment as the main subject. Return uncertain when it may "
+            "be a real garment photo but medium, subject, cropping, blur, "
+            "obstruction, or visibility cannot be judged confidently. When in "
+            "doubt between valid and uncertain, choose uncertain. Base every field "
+            "only on visible evidence and never on an extracted garment category."
         )
         return self._request(
             image_path=image_path,
