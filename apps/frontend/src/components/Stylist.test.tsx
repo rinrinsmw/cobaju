@@ -10,15 +10,31 @@ vi.mock("../auth", () => ({
   useAuth: () => ({ user: { id: 7, email: "stylist@example.com" } }),
 }))
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" },
   })
 }
 
-async function renderStylist(): Promise<Root> {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])))
+const confirmedWardrobeItem = {
+  id: 99,
+  name: "Test shirt",
+  category: "top",
+  color: "blue",
+  description: null,
+  original_image_path: null,
+  analysis_completed: true,
+  processing_status: "completed",
+}
+
+async function renderStylist(
+  fetchMock = vi.fn().mockResolvedValue(jsonResponse([confirmedWardrobeItem])),
+): Promise<Root> {
+  vi.stubGlobal(
+    "fetch",
+    fetchMock,
+  )
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -43,6 +59,19 @@ function button(label: string) {
   )
   if (!match) throw new Error(`Button not found: ${label}`)
   return match as HTMLButtonElement
+}
+
+async function waitForButton(label: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const match = [...document.querySelectorAll("button")].find((element) =>
+      element.textContent?.includes(label),
+    )
+    if (match) return match as HTMLButtonElement
+    await act(
+      async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+    )
+  }
+  throw new Error(`Button not found: ${label}`)
 }
 
 async function waitForElement<T extends Element>(selector: string): Promise<T> {
@@ -106,13 +135,19 @@ describe("Stylist session UI", () => {
     expect(window.sessionStorage.getItem(getStylistSessionKey(7))).toBeNull()
   })
 
-  it("returns directly to the welcome state when the conversation is empty", async () => {
-    root = await renderStylist()
+  it("does not present a failed wardrobe query as an empty wardrobe", async () => {
+    root = await renderStylist(
+      vi.fn().mockResolvedValue(
+        jsonResponse({ detail: "Service unavailable" }, 503),
+      ),
+    )
 
-    await act(async () => button("New Request").click())
-
-    expect(document.querySelector('[role="dialog"]')).toBeNull()
-    expect(window.sessionStorage.getItem(getStylistSessionKey(7))).toBeNull()
+    const retryButton = await waitForButton("Retry")
+    expect(document.body.textContent).toContain("Could not load your wardrobe.")
+    expect(document.body.textContent).not.toContain(
+      "Add and confirm your first wardrobe piece before using the Stylist.",
+    )
+    expect(retryButton).not.toBeNull()
   })
 
   it("shows the total wardrobe count with a confirmed-item breakdown", async () => {
@@ -168,7 +203,8 @@ describe("Stylist session UI", () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, options?: RequestInit) => {
         const path = String(input)
-        if (path === "/api/wardrobe/items") return jsonResponse([])
+        if (path === "/api/wardrobe/items")
+          return jsonResponse([confirmedWardrobeItem])
         if (
           path === "/api/chat/recommendations" &&
           options?.method === "POST"
@@ -232,7 +268,8 @@ describe("Stylist session UI", () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, options?: RequestInit) => {
         const path = String(input)
-        if (path === "/api/wardrobe/items") return jsonResponse([])
+        if (path === "/api/wardrobe/items")
+          return jsonResponse([confirmedWardrobeItem])
         if (
           path === "/api/chat/recommendations" &&
           options?.method === "POST"
@@ -267,7 +304,8 @@ describe("Stylist session UI", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
-    await act(async () => button("💼 Work").click())
+    const workButton = await waitForButton("💼 Work")
+    await act(async () => workButton.click())
     await act(
       async () => new Promise((resolve) => window.setTimeout(resolve, 0)),
     )
@@ -377,8 +415,9 @@ describe("Stylist session UI", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
+    const imageWorkButton = await waitForButton("💼 Work")
     await act(async () => {
-      button("💼 Work").click()
+      imageWorkButton.click()
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
@@ -446,7 +485,7 @@ describe("Stylist session UI", () => {
       (input: RequestInfo | URL, options?: RequestInit) => {
         const path = String(input)
         if (path === "/api/wardrobe/items")
-          return Promise.resolve(jsonResponse([]))
+          return Promise.resolve(jsonResponse([confirmedWardrobeItem]))
         if (
           path === "/api/chat/recommendations" &&
           options?.method === "POST"
@@ -474,7 +513,8 @@ describe("Stylist session UI", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
-    await act(async () => button("💼 Work").click())
+    const workButton = await waitForButton("💼 Work")
+    await act(async () => workButton.click())
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chat/recommendations",
@@ -485,6 +525,7 @@ describe("Stylist session UI", () => {
       }),
     )
     expect(button("Send").disabled).toBe(true)
+    expect(button("New Request").disabled).toBe(true)
     expect(
       container.querySelector<HTMLInputElement>(
         'input[aria-label="Styling request"]',
@@ -603,8 +644,9 @@ describe("Stylist session UI", () => {
       )
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
+    const partyButton = await waitForButton("🎉 Party")
     await act(async () => {
-      button("🎉 Party").click()
+      partyButton.click()
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
@@ -630,13 +672,13 @@ describe("Stylist session UI", () => {
 
     expect(requests).toEqual([
       { message: "Choose a fun, polished outfit for a party." },
-      { message: "Make the previous recommendation more casual." },
+      { message: "Create a more casual outfit for Party using my wardrobe." },
     ])
     expect(document.body.textContent).toContain(
       "Choose a fun, polished outfit for a party.",
     )
     expect(document.body.textContent).toContain(
-      "Make the previous recommendation more casual.",
+      "Create a more casual outfit for Party using my wardrobe.",
     )
   })
 })

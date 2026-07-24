@@ -1,6 +1,6 @@
 # Cobaju backend
 
-This FastAPI service contains Cobaju's backend through Phase 11:
+This FastAPI service contains Cobaju's current backend:
 
 - settings loaded from environment variables or the repository root `.env`;
 - a SQLModel engine and per-request session dependency;
@@ -13,7 +13,7 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - a clothing item table with category and processing-status enums;
 - authenticated wardrobe create, list, detail, partial update, and delete routes;
 - ownership checks that hide other users' items;
-- a maximum of 15 completed items per user;
+- a maximum of 50 completed items per user;
 - authenticated multipart uploads attached to owned wardrobe items;
 - JPG, PNG, and WebP content validation with a 5 MB limit;
 - UUID-based filenames in configurable user-specific local directories;
@@ -28,7 +28,7 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - OpenRouter text-embedding configuration and a mockable embedding provider;
 - persistent Chroma records for confirmed clothing metadata;
 - vector updates and deletions tied to wardrobe lifecycle changes;
-- lazy backfill of confirmed items created before Phase 7;
+- lazy backfill of confirmed items created before vector indexing was added;
 - semantic search with mandatory user and optional category filters;
 - optional Langfuse wardrobe-retrieval spans;
 - normal ownership-safe Python services for stylist-facing wardrobe operations;
@@ -43,6 +43,7 @@ This FastAPI service contains Cobaju's backend through Phase 11:
 - one authenticated OpenAI Agents SDK Wardrobe Stylist Agent;
 - deterministic prompt-injection rejection and a temperature-0.0 chat classifier;
 - one capped `get_styling_candidates` retrieval per Stylist request;
+- one zero-argument, read-only Stylist tool for request-cached wardrobe evidence;
 - owned item IDs grounded through cached MCP evidence;
 - clearly separated incomplete-wardrobe guidance;
 - one structured chat response and optional Langfuse recommendation traces;
@@ -88,8 +89,8 @@ in the selected ID list and are returned with `available: false`.
 
 ## Stylist chat endpoint
 
-The authenticated `POST /chat/recommendations` workflow now includes Phase 11.
-Configure
+The authenticated `POST /chat/recommendations` workflow uses the complete
+guardrail, retrieval, generation, evaluation, and repair pipeline. Configure
 `OPENROUTER_CHAT_GUARDRAIL_MODEL` for strict JSON output and
 `OPENROUTER_STYLIST_MODEL` for strict JSON plus Chat Completions tool calling.
 Configure `OPENROUTER_STYLE_CRITIC_MODEL` for strict structured output.
@@ -101,7 +102,10 @@ Explicit prompt injection is rejected before a paid call. Allowed requests run
 one request-scoped session against the trusted current user's MCP process. One
 `get_styling_candidates` call returns the optional anchor, all owned IDs, capped
 candidate groups, and missing required categories. Unavailable categories are
-returned separately as generic, non-owned guidance. Deterministic code first
+returned separately as generic, non-owned guidance. That result is cached in the
+request-scoped Stylist. The initial Agent receives only the user request and
+reads the cache through `read_cached_wardrobe_evidence`, a zero-argument tool
+that performs no MCP, database, Chroma, or network call. Deterministic code first
 rechecks item IDs against that cached evidence, categories,
 required-category coverage, and explicit `Not owned:` labels. Candidates that
 fail are sent once to a tool-free repair model together with the original
@@ -127,11 +131,11 @@ curl -X POST http://127.0.0.1:8000/chat/recommendations \
   -d '{"message":"Build a smart-casual office outfit from my wardrobe"}'
 ```
 
-`STYLIST_MAX_TOOL_CALLS` bounds the two expected MCP calls and
+`STYLIST_MAX_TOOL_CALLS` bounds request-scoped MCP calls and
 `STYLING_CANDIDATES_PER_CATEGORY` caps each returned group.
 `STYLIST_REPAIR_TEMPERATURE` controls the single repair call. The SDK's
 default OpenAI trace exporter is disabled. When `LANGFUSE_ENABLED=true`, Cobaju
-creates an `outfit_recommendation` trace without the message body or secrets.
+creates a `stylist_request` trace without the message body or secrets.
 
 ## Wardrobe MCP server
 
@@ -157,11 +161,12 @@ before exposing tools. Closing the dependency always closes the client session,
 stdio streams, and child process, including when the caller raises an exception.
 
 `search_wardrobe` needs the OpenRouter embedding settings described below. The
-server can still list categories, get confirmed items, and validate a
-recommendation when semantic retrieval is not configured.
+server can still retrieve styling candidates, list categories, get confirmed
+items, and validate a recommendation when semantic retrieval is not configured.
 
-Normal Stylist requests use only `get_styling_candidates`. They do not list tools
-or call the lower-level search/category tools. The MCP `save_recommendation`
+Normal Stylist requests use only `get_styling_candidates` at the MCP boundary.
+The model can call only its request-cached evidence reader; it cannot list or
+call MCP or the lower-level search/category tools. The MCP `save_recommendation`
 tool remains ownership-safe, but the web app's explicit Lookbook action uses the
 authenticated recommendations API.
 
@@ -230,9 +235,9 @@ input and strict structured outputs. Langfuse tracing is disabled by default;
 enable it with `LANGFUSE_ENABLED=true` and the standard Langfuse key and host
 variables. Image bytes and secrets are not included in trace inputs.
 
-Phase 13 routes all tracing through the shared provider-neutral observability
-facade. The full stylist hierarchy, structured logging fields, prompt versions,
-quality metrics, and Langfuse validation workflow are documented in
+Tracing uses the shared provider-neutral observability facade. The full stylist
+hierarchy, structured logging fields, prompt versions, quality metrics, and
+Langfuse validation workflow are documented in
 [`../../docs/Observability.md`](../../docs/Observability.md).
 
 Set `OPENROUTER_EMBEDDING_MODEL` to a text embedding model available through
@@ -249,6 +254,10 @@ curl --get http://127.0.0.1:8000/wardrobe/items/search \
 ```
 
 ## Run from the repository root
+
+The root [README](../../README.md) is the primary onboarding guide and contains
+the complete environment-variable, frontend, deployment, and troubleshooting
+instructions. The commands below are the backend-specific quick reference.
 
 Install dependencies and apply migrations:
 
@@ -276,37 +285,37 @@ Run the backend tests:
 moon run backend:test
 ```
 
-Run only the mocked clothing-analysis and Phase 6 processing tests:
+Run only the mocked clothing-analysis and worker-processing tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_clothing_analysis.py
 ```
 
-Run only the Phase 7 retrieval tests:
+Run only the retrieval tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_retrieval.py
 ```
 
-Run only the Phase 8 service and MCP tool tests:
+Run only the service and MCP tool tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_mcp.py
 ```
 
-Run only the Phase 9 chat and stylist tests:
+Run only the chat and stylist tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_chat.py
 ```
 
-Run only the Phase 10 evaluator and deterministic validation tests:
+Run only the evaluator and deterministic-validation tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_evaluation.py
 ```
 
-Run only the Phase 11 recommendation history tests:
+Run only the recommendation-history tests:
 
 ```bash
 uv run --project apps/backend pytest apps/backend/tests/test_recommendation_history.py

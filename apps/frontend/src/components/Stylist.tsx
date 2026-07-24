@@ -14,9 +14,11 @@ import {
   saveStylistSession,
   type ChatMessage,
 } from "../stylistSession"
+import type { Page } from "../data"
 
 interface Props {
   prefill?: string
+  onNavigate?: (page: Page) => void
 }
 
 const quickPrompts = [
@@ -55,17 +57,32 @@ const quickPrompts = [
 const followUpPrompts = [
   {
     label: "🔄 Another Outfit",
-    prompt: "Give me another outfit option for the same occasion.",
+    kind: "another",
   },
   {
     label: "😌 More Casual",
-    prompt: "Make the previous recommendation more casual.",
+    kind: "casual",
   },
   {
     label: "✨ More Elegant",
-    prompt: "Make the previous recommendation more elegant.",
+    kind: "elegant",
   },
-]
+] as const
+
+type FollowUpKind = (typeof followUpPrompts)[number]["kind"]
+
+function buildFollowUpPrompt(kind: FollowUpKind, context: string) {
+  const requestContext = context.trim()
+  const wording = {
+    another: "another",
+    casual: "a more casual",
+    elegant: "a more elegant",
+  }[kind]
+
+  return requestContext
+    ? `Create ${wording} outfit for ${requestContext} using my wardrobe.`
+    : `Create ${wording} complete outfit using my wardrobe.`
+}
 
 const agentProgress = [
   {
@@ -349,7 +366,7 @@ function RecommendationCard({
   conversationTheme: string
   wardrobeItem: (id: number) => ClothingItem | undefined
   loading: boolean
-  onFollowUp: (prompt: string) => void
+  onFollowUp: (kind: FollowUpKind) => void
 }) {
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState(false)
@@ -483,7 +500,7 @@ function RecommendationCard({
             <button
               key={item.label}
               type="button"
-              onClick={() => onFollowUp(item.prompt)}
+              onClick={() => onFollowUp(item.kind)}
               disabled={loading}
               style={followUpButton}
             >
@@ -577,7 +594,7 @@ function LoadingMessage() {
   )
 }
 
-export default function Stylist({ prefill = "" }: Props) {
+export default function Stylist({ prefill = "", onNavigate }: Props) {
   const { user } = useAuth()
   const [initialSession] = useState(() =>
     user ? loadStylistSession(user.id) : null,
@@ -595,14 +612,20 @@ export default function Stylist({ prefill = "" }: Props) {
   )
   const [input, setInput] = useState(prefill)
   const [temporaryError, setTemporaryError] = useState("")
+  const [failedRequest, setFailedRequest] = useState("")
   const [showNewRequestDialog, setShowNewRequestDialog] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   const conversationIdRef = useRef(0)
+  const prefillSentRef = useRef(false)
   const skipInitialPersistenceRef = useRef(Boolean(initialSession))
   const wardrobe = useQuery({
     queryKey: ["wardrobe"],
     queryFn: () => apiRequest<ClothingItem[]>("/wardrobe/items"),
   })
+  const wardrobeItems = wardrobe.data ?? []
+  const confirmedItems = wardrobeItems.filter(
+    (item) => item.processing_status === "completed",
+  ).length
   const chat = useMutation({
     mutationFn: async ({
       message,
@@ -619,24 +642,44 @@ export default function Stylist({ prefill = "" }: Props) {
     }),
     onSuccess: ({ response, conversationId }) => {
       if (conversationId !== conversationIdRef.current) return
+      setFailedRequest("")
       setMessages((current) => [...current, { role: "ai", response }])
     },
-    onError: (error, { conversationId }) => {
-      if (conversationId === conversationIdRef.current)
-        setTemporaryError(error.message)
+    onError: (_error, { message, conversationId }) => {
+      if (conversationId === conversationIdRef.current) {
+        setFailedRequest(message)
+        setTemporaryError("Could not create an outfit right now. Please try again.")
+      }
     },
   })
 
   const send = (value?: string, initialTheme?: string) => {
     const message = (value ?? input).trim()
-    if (!message || chat.isPending) return
+    if (
+      !message ||
+      chat.isPending ||
+      !wardrobe.isSuccess ||
+      confirmedItems === 0
+    )
+      return
     const stableTheme = conversationTheme || initialTheme?.trim() || message
     if (!conversationTheme) setConversationTheme(stableTheme)
     setInput("")
+    setFailedRequest("")
     setTemporaryError("")
     setMessages((current) => [...current, { role: "user", text: message }])
     chat.mutate({
       message,
+      conversationId: conversationIdRef.current,
+    })
+  }
+
+  const retryFailedRequest = () => {
+    if (!failedRequest || chat.isPending || !wardrobe.isSuccess || confirmedItems === 0)
+      return
+    setTemporaryError("")
+    chat.mutate({
+      message: failedRequest,
       conversationId: conversationIdRef.current,
     })
   }
@@ -646,6 +689,7 @@ export default function Stylist({ prefill = "" }: Props) {
     setMessages([])
     setConversationTheme("")
     setInput("")
+    setFailedRequest("")
     setTemporaryError("")
     setShowNewRequestDialog(false)
     chat.reset()
@@ -657,14 +701,24 @@ export default function Stylist({ prefill = "" }: Props) {
   )
   const hasStylistResponse = messages.some((message) => message.response)
   const startNewRequest = () =>
-    hasConversation ? setShowNewRequestDialog(true) : resetConversation()
+    chat.isPending
+      ? undefined
+      : hasConversation
+        ? setShowNewRequestDialog(true)
+        : resetConversation()
 
   useEffect(() => {
-    if (prefill) {
+    if (
+      prefill &&
+      !prefillSentRef.current &&
+      wardrobe.isSuccess &&
+      confirmedItems > 0
+    ) {
+      prefillSentRef.current = true
       const timer = window.setTimeout(() => send(prefill), 300)
       return () => window.clearTimeout(timer)
     }
-  }, [])
+  }, [prefill, wardrobe.isSuccess, confirmedItems])
   useEffect(() => {
     if (!user) return
     if (skipInitialPersistenceRef.current) {
@@ -681,10 +735,6 @@ export default function Stylist({ prefill = "" }: Props) {
 
   const wardrobeItem = (id: number) =>
     wardrobe.data?.find((item) => item.id === id)
-  const wardrobeItems = wardrobe.data ?? []
-  const confirmedItems = wardrobeItems.filter(
-    (item) => item.processing_status === "completed",
-  ).length
   const awaitingConfirmation = wardrobeItems.filter(
     (item) =>
       item.processing_status === "pending" && item.analysis_completed,
@@ -707,6 +757,11 @@ export default function Stylist({ prefill = "" }: Props) {
   ]
     .filter(Boolean)
     .join(" · ")
+  const stylistDisabled =
+    chat.isPending || !wardrobe.isSuccess || confirmedItems === 0
+
+  const followUp = (kind: FollowUpKind) =>
+    send(buildFollowUpPrompt(kind, conversationTheme))
 
   return (
     <div style={{ paddingTop: 64, background: "#f7f4ef", minHeight: "100vh" }}>
@@ -730,7 +785,15 @@ export default function Stylist({ prefill = "" }: Props) {
               <em style={{ color: "#c9a96e" }}>Use what you own.</em>
             </h1>
           </div>
-          <button onClick={startNewRequest} style={newRequestButton}>
+          <button
+            onClick={startNewRequest}
+            disabled={chat.isPending}
+            style={{
+              ...newRequestButton,
+              opacity: chat.isPending ? 0.45 : 1,
+              cursor: chat.isPending ? "not-allowed" : "pointer",
+            }}
+          >
             ＋ New Request
           </button>
         </div>
@@ -769,8 +832,41 @@ export default function Stylist({ prefill = "" }: Props) {
               gap: 20,
             }}
           >
-            {(!hasConversation || (chat.isPending && !hasStylistResponse)) && (
-              <Welcome disabled={chat.isPending} onSelect={send} />
+            {wardrobe.isError && (
+              <section role="alert" style={welcomeCard}>
+                <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, marginBottom: 12 }}>
+                  Could not load your wardrobe.
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => void wardrobe.refetch()}
+                  style={dialogConfirmButton}
+                >
+                  Retry
+                </button>
+              </section>
+            )}
+            {wardrobe.isSuccess && confirmedItems === 0 && (
+              <section style={welcomeCard}>
+                <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, marginBottom: 12 }}>
+                  Start with your wardrobe
+                </h2>
+                <p style={{ color: "#6b6055", lineHeight: 1.65, marginBottom: 20 }}>
+                  Add and confirm your first wardrobe piece before using the Stylist.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => onNavigate?.("upload")}
+                  style={dialogConfirmButton}
+                >
+                  Add piece
+                </button>
+              </section>
+            )}
+            {!wardrobe.isError &&
+              confirmedItems > 0 &&
+              (!hasConversation || (chat.isPending && !hasStylistResponse)) && (
+              <Welcome disabled={stylistDisabled} onSelect={send} />
             )}
             {messages.map((message, index) => (
               <div
@@ -809,7 +905,7 @@ export default function Stylist({ prefill = "" }: Props) {
                       conversationTheme={conversationTheme}
                       wardrobeItem={wardrobeItem}
                       loading={chat.isPending}
-                      onFollowUp={send}
+                      onFollowUp={followUp}
                     />
                   )}
                 </div>
@@ -822,11 +918,28 @@ export default function Stylist({ prefill = "" }: Props) {
                 style={{ display: "flex", alignItems: "center", gap: 10 }}
               >
                 <span style={avatar}>✦</span>
-                <span
-                  style={{ ...bubble, background: "#f7f4ef", color: "#9f3a32" }}
-                >
-                  {temporaryError}
-                </span>
+                <div style={{ ...bubble, background: "#f7f4ef", color: "#9f3a32" }}>
+                  <span>{temporaryError}</span>
+                  {failedRequest && (
+                    <button
+                      type="button"
+                      onClick={retryFailedRequest}
+                      disabled={chat.isPending}
+                      style={{
+                        display: "block",
+                        marginTop: 8,
+                        border: 0,
+                        padding: 0,
+                        background: "transparent",
+                        color: "#6d5632",
+                        fontWeight: 700,
+                        cursor: chat.isPending ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -844,14 +957,14 @@ export default function Stylist({ prefill = "" }: Props) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") send()
               }}
-              disabled={chat.isPending}
+              disabled={stylistDisabled}
               placeholder="What are you dressing for?"
               aria-label="Styling request"
               style={composer}
             />
             <button
               onClick={() => send()}
-              disabled={chat.isPending}
+              disabled={stylistDisabled}
               style={sendButton}
             >
               Send
@@ -866,10 +979,16 @@ export default function Stylist({ prefill = "" }: Props) {
             >
               {wardrobe.isPending
                 ? "…"
-                : wardrobeItems.length}
+                : wardrobe.isError
+                  ? "—"
+                  : wardrobeItems.length}
             </p>
             <p style={{ color: "#6b6055", fontSize: 12, lineHeight: 1.55 }}>
-              {wardrobe.isPending ? "Checking your wardrobe…" : wardrobeStatus}
+              {wardrobe.isPending
+                ? "Checking your wardrobe…"
+                : wardrobe.isError
+                  ? "Could not load your wardrobe."
+                  : wardrobeStatus}
             </p>
           </div>
           <div
@@ -936,7 +1055,15 @@ export default function Stylist({ prefill = "" }: Props) {
               >
                 Cancel
               </button>
-              <button onClick={resetConversation} style={dialogConfirmButton}>
+              <button
+                onClick={resetConversation}
+                disabled={chat.isPending}
+                style={{
+                  ...dialogConfirmButton,
+                  opacity: chat.isPending ? 0.45 : 1,
+                  cursor: chat.isPending ? "not-allowed" : "pointer",
+                }}
+              >
                 Start New Request
               </button>
             </div>

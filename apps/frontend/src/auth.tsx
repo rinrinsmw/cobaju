@@ -19,6 +19,8 @@ interface AuthValue {
 }
 
 const AuthContext = createContext<AuthValue | null>(null)
+const AUTH_SERVICE_UNAVAILABLE_MESSAGE =
+  'Could not restore your session because Cobaju is temporarily unavailable. Please try again.'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -41,14 +43,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!getToken()) return
-    apiRequest<User>('/auth/me').then(setUser).catch(() => undefined).finally(() => setChecking(false))
+    apiRequest<User>('/auth/me')
+      .then(restoredUser => {
+        setUser(restoredUser)
+        setSessionMessage('')
+      })
+      .catch(error => {
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) return
+        setSessionMessage(AUTH_SERVICE_UNAVAILABLE_MESSAGE)
+      })
+      .finally(() => setChecking(false))
   }, [])
 
   const login = async (email: string, password: string) => {
     const result = await apiRequest<{ access_token: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
     window.localStorage.setItem('access_token', result.access_token)
-    setUser(await apiRequest<User>('/auth/me'))
-    setSessionMessage('')
+    try {
+      setUser(await apiRequest<User>('/auth/me'))
+      setSessionMessage('')
+    } catch {
+      window.localStorage.removeItem('access_token')
+      setUser(null)
+      setSessionMessage('')
+      throw new Error('Could not finish signing you in. Please try again.')
+    }
   }
   const register = async (email: string, password: string) => {
     await apiRequest('/auth/register', { method: 'POST', body: JSON.stringify({ email, password }) })

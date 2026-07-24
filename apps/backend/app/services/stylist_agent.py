@@ -13,11 +13,13 @@ from typing import Any, AsyncContextManager, Protocol
 from agents import (
     Agent,
     AsyncOpenAI,
+    FunctionTool,
     ModelSettings,
     OpenAIChatCompletionsModel,
     RunConfig,
     RunHooks,
     Runner,
+    function_tool,
 )
 from agents.exceptions import AgentsException, ModelBehaviorError
 from mcp import ClientSession
@@ -60,6 +62,7 @@ class StylistLifecycleMetrics:
 
     mcp_session_count: int = 1
     tool_call_count: int = 0
+    cached_evidence_tool_call_count: int = 0
     candidate_count: int = 0
     cache_reused_during_repair: bool = False
     retrieval_duration_ms: float = 0.0
@@ -69,6 +72,9 @@ class StylistLifecycleMetrics:
         return {
             "mcp_session_count": self.mcp_session_count,
             "tool_call_count": self.tool_call_count,
+            "cached_evidence_tool_call_count": (
+                self.cached_evidence_tool_call_count
+            ),
             "candidate_count": self.candidate_count,
             "cache_reused_during_repair": self.cache_reused_during_repair,
             "retrieval_duration_ms": self.retrieval_duration_ms,
@@ -263,8 +269,10 @@ class ToolBudgetHooks(RunHooks[None]):
 
 
 _STYLIST_INSTRUCTIONS = """
-You are Cobaju's Wardrobe Stylist. The input contains one cached wardrobe
-evidence bundle retrieved through MCP. You have no tools.
+You are Cobaju's Wardrobe Stylist. The input contains only the user's request.
+Before generating a recommendation, call read_cached_wardrobe_evidence to read
+the one cached wardrobe evidence bundle. This read-only tool accepts no
+arguments and does not perform retrieval.
 
 Use only candidate item IDs, categories, and facts in that bundle. The anchor
 item, when present, must be included. Never invent ownership or wardrobe facts.
@@ -429,9 +437,17 @@ def _ground_recommendation_prose(
 
 
 class _ModelAttemptHooks(RunHooks[None]):
-    def __init__(self, stage: str) -> None:
+    def __init__(
+        self,
+        stage: str,
+        observability: Observability | None = None,
+    ) -> None:
         self.stage = stage
+        self.observability = observability
         self.attempt_ids: list[str | None] = []
+        self.active_tool_calls: list[
+            tuple[str, float, Observation | None, dict[str, Any] | None]
+        ] = []
 
     async def on_llm_start(
         self, context: Any, agent: Any, system_prompt: Any, input_items: Any
@@ -444,9 +460,81 @@ class _ModelAttemptHooks(RunHooks[None]):
         if self.attempt_ids:
             finish_model_attempt(self.attempt_ids.pop())
 
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        del context, agent
+        observation = None
+        if self.observability is not None:
+            observation = self.observability.start_observation(
+                f"agent.{tool.name}",
+                as_type="tool",
+            )
+        self.active_tool_calls.append(
+            (
+                tool.name,
+                time.perf_counter(),
+                observation,
+                start_tool_call(tool.name),
+            )
+        )
+
+    async def on_tool_end(
+        self,
+        context: Any,
+        agent: Any,
+        tool: Any,
+        result: object,
+    ) -> None:
+        del context, agent
+        active = self._pop_active_tool(tool.name)
+        if active is None:
+            return
+        self._finish_tool(active, success=True, result=result)
+
     def close(self, error: BaseException) -> None:
         while self.attempt_ids:
             finish_model_attempt(self.attempt_ids.pop(), error=error)
+        while self.active_tool_calls:
+            self._finish_tool(
+                self.active_tool_calls.pop(),
+                success=False,
+                error=error,
+            )
+
+    def _pop_active_tool(
+        self,
+        name: str,
+    ) -> tuple[str, float, Observation | None, dict[str, Any] | None] | None:
+        for index in range(len(self.active_tool_calls) - 1, -1, -1):
+            if self.active_tool_calls[index][0] == name:
+                return self.active_tool_calls.pop(index)
+        return None
+
+    def _finish_tool(
+        self,
+        active: tuple[str, float, Observation | None, dict[str, Any] | None],
+        *,
+        success: bool,
+        result: object | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        name, started, observation, diagnostic = active
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        finish_tool_call(
+            diagnostic,
+            duration_ms=duration_ms,
+            success=success,
+        )
+        if observation is not None:
+            output: dict[str, object] = {"success": success}
+            if isinstance(result, GetStylingCandidatesOutput):
+                output["candidate_count"] = len(result.candidate_items)
+            observation.update(
+                output=output,
+                level="DEFAULT" if success else "ERROR",
+                status_message=type(error).__name__ if error else None,
+                metadata={"tool_name": name, "duration_ms": duration_ms},
+            )
+            observation.end()
 
 
 class RequestScopedStylist:
@@ -468,6 +556,7 @@ class RequestScopedStylist:
         bundle = await self._get_styling_candidates(
             message, categories, anchor_item_id
         )
+        cached_evidence_tool = self._build_cached_evidence_tool()
         generation_scope = (
             self.owner.observability.observe(
                 "stylist_generation",
@@ -489,11 +578,11 @@ class RequestScopedStylist:
                     instructions=_STYLIST_INSTRUCTIONS,
                     model_input={
                         "user_request": message,
-                        "wardrobe_evidence": bundle.model_dump(mode="json"),
                     },
                     stage="stylist_model",
                     temperature=self.owner.settings.stylist_temperature,
                     prompt_version=self.owner.settings.stylist_prompt_version,
+                    tools=[cached_evidence_tool],
                 )
             except Exception as error:
                 if generation_observation is not None:
@@ -504,6 +593,10 @@ class RequestScopedStylist:
                         }
                     )
                 raise
+            if self.metrics.cached_evidence_tool_call_count == 0:
+                logger.warning(
+                    "Wardrobe Stylist skipped read_cached_wardrobe_evidence"
+                )
             if generation_observation is not None:
                 generation_observation.update(
                     output={"status": "completed", "failure_reason": None}
@@ -518,6 +611,20 @@ class RequestScopedStylist:
             candidate_bundle=bundle,
             lifecycle_metrics=self.metrics,
         )
+
+    def _build_cached_evidence_tool(self) -> FunctionTool:
+        """Expose the request cache without performing retrieval or other I/O."""
+
+        @function_tool
+        async def read_cached_wardrobe_evidence() -> GetStylingCandidatesOutput:
+            """Read the wardrobe evidence already cached for this request."""
+
+            if self.cached_candidates is None:
+                raise StylistAgentError("Cached wardrobe evidence is unavailable")
+            self.metrics.cached_evidence_tool_call_count += 1
+            return self.cached_candidates
+
+        return read_cached_wardrobe_evidence
 
     async def repair(
         self,
@@ -663,6 +770,7 @@ class OpenAIAgentsStylistRunner:
         stage: str,
         temperature: float,
         prompt_version: str,
+        tools: list[FunctionTool] | None = None,
     ) -> StylistResponse:
         api_key = self.settings.openrouter_api_key.get_secret_value()
         model_name = self.settings.openrouter_stylist_model
@@ -681,10 +789,11 @@ class OpenAIAgentsStylistRunner:
             model=model,
             model_settings=ModelSettings(temperature=temperature),
             output_type=StylistResponse,
+            tools=tools or [],
         )
         try:
             for attempt in range(2):
-                hooks = _ModelAttemptHooks(stage)
+                hooks = _ModelAttemptHooks(stage, self.observability)
                 try:
                     result = await Runner.run(
                         agent,

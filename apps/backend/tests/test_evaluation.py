@@ -180,6 +180,7 @@ def outcome(response: StylistResponse) -> StylistRunOutcome:
 
 
 def test_stylist_prompts_require_evidence_grounded_prose() -> None:
+    assert "call read_cached_wardrobe_evidence" in _STYLIST_INSTRUCTIONS
     assert "Ground every factual phrase" in _STYLIST_INSTRUCTIONS
     assert "does not prove its comfort" in _STYLIST_INSTRUCTIONS
     assert "If the evidence cannot support a detail, omit it" in _STYLIST_INSTRUCTIONS

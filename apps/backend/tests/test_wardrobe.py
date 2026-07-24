@@ -241,7 +241,7 @@ def test_limit_counts_only_confirmed_items(
     session.add(pending_item)
     session.commit()
 
-    for number in range(15):
+    for number in range(50):
         response = test_client.post(
             "/wardrobe/items",
             json=clothing_payload(f"Confirmed item {number + 1}"),
@@ -257,9 +257,9 @@ def test_limit_counts_only_confirmed_items(
 
     assert limit_response.status_code == 409
     assert limit_response.json() == {
-        "detail": "Wardrobe limit of 15 confirmed items reached"
+        "detail": "Wardrobe limit of 50 confirmed items reached"
     }
-    assert len(test_client.get("/wardrobe/items", headers=headers).json()) == 16
+    assert len(test_client.get("/wardrobe/items", headers=headers).json()) == 51
 
 
 def test_deleting_confirmed_item_frees_one_limit_slot(
@@ -268,7 +268,7 @@ def test_deleting_confirmed_item_frees_one_limit_slot(
     test_client, _ = client
     headers = create_account_and_headers(test_client, "slot@example.com")
 
-    for number in range(15):
+    for number in range(50):
         response = test_client.post(
             "/wardrobe/items",
             json=clothing_payload(f"Item {number + 1}"),

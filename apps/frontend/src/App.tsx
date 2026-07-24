@@ -52,7 +52,7 @@ export default function App() {
         {page === 'dashboard' && <Dashboard onNavigate={navigate} />}
         {page === 'wardrobe' && <Wardrobe onNavigate={navigate} />}
         {page === 'upload' && <Upload onNavigate={navigate} />}
-        {page === 'stylist' && <Stylist prefill={chatPrefill} />}
+        {page === 'stylist' && <Stylist prefill={chatPrefill} onNavigate={navigate} />}
         {page === 'history' && <History onNavigate={navigate} />}
       </div>
     </div>

@@ -13,7 +13,7 @@ from app.schemas.wardrobe import (
 )
 
 
-MAX_CONFIRMED_ITEMS = 15
+MAX_CONFIRMED_ITEMS = 50
 PENDING_ITEM_NAME = "Pending analysis"
 PENDING_ITEM_COLOR = "Unknown"
 

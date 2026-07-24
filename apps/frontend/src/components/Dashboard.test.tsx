@@ -24,6 +24,7 @@ async function renderDashboard(root: Root, onNavigate = vi.fn()) {
     )
     await new Promise(resolve => window.setTimeout(resolve, 0))
   })
+  return queryClient
 }
 
 async function waitForStat(label: string, expectedValue: string) {
@@ -52,7 +53,8 @@ describe('Dashboard styling prompt', () => {
     const navigate = vi.fn()
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
-      if (path === '/api/wardrobe/items' || path === '/api/recommendations') {
+      if (path === '/api/wardrobe/items') return jsonResponse([])
+      if (path === '/api/recommendations') {
         return jsonResponse([])
       }
       throw new Error(`Unexpected request: ${path}`)
@@ -61,7 +63,7 @@ describe('Dashboard styling prompt', () => {
     document.body.appendChild(container)
     root = createRoot(container)
 
-    await renderDashboard(root, navigate)
+    const queryClient = await renderDashboard(root, navigate)
 
     const input = container.querySelector<HTMLInputElement>(
       'input[placeholder="Describe an occasion…"]',
@@ -93,9 +95,25 @@ describe('Dashboard styling prompt', () => {
       valueSetter?.call(input, '  Dinner party  ')
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(styleButton.disabled).toBe(false)
+    expect(styleButton.disabled).toBe(true)
+    expect(document.body.textContent).toContain(
+      'Add and confirm your first wardrobe piece before using the Stylist.',
+    )
+    expect(navigate).not.toHaveBeenCalled()
 
-    await act(async () => styleButton.click())
+    await act(async () => {
+      queryClient.setQueryData(
+        ['wardrobe'],
+        [{ id: 1, processing_status: 'completed' }],
+      )
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+    })
+    const enabledStyleButton = [...container.querySelectorAll('button')].find(
+      button => button.textContent?.includes('Style me'),
+    )
+    expect(enabledStyleButton?.disabled).toBe(false)
+
+    await act(async () => enabledStyleButton?.click())
     expect(navigate).toHaveBeenCalledWith('stylist', 'Dinner party')
   })
 
@@ -126,7 +144,7 @@ describe('Dashboard styling prompt', () => {
 
     await renderDashboard(root)
 
-    await waitForStat('pieces in wardrobe', '3')
+    await waitForStat('pieces in wardrobe', '2')
     await waitForStat('outfits this week', '2')
     await waitForStat('wardrobe utilised', '100%')
     expect(document.body.textContent).not.toContain('avg. outfit score')

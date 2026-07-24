@@ -151,7 +151,7 @@ def test_combined_upload_is_not_counted_as_a_confirmed_item(
 ) -> None:
     test_client, _ = client
     headers = create_account_and_headers(test_client, "combined-limit@example.com")
-    for item_number in range(15):
+    for item_number in range(50):
         create_item(test_client, headers, f"Confirmed item {item_number}")
 
     response = test_client.post(

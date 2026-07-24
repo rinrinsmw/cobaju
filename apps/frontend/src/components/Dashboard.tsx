@@ -28,8 +28,8 @@ const collagePhotos = [
 
 const features = [
   { label: 'Outfit generation', desc: 'From your actual wardrobe, not a wishlist.' },
-  { label: 'AI analysis', desc: 'Every item tagged automatically on upload.' },
-  { label: 'Style memory', desc: 'Learns what works for you over time.' },
+  { label: 'AI clothing analysis', desc: 'Review AI-generated details before confirming each piece.' },
+  { label: 'Style Critic review', desc: 'Recommendations are reviewed and validated before you see them.' },
 ]
 
 interface RecommendationSummary {
@@ -58,7 +58,11 @@ export default function Dashboard({ onNavigate }: Props) {
   })
 
   const wardrobeItems = wardrobe.data ?? []
-  const currentWardrobeIds = new Set(wardrobeItems.map(item => item.id))
+  const confirmedItems = wardrobeItems.filter(
+    item => item.processing_status === 'completed',
+  )
+  const canStartStylist = wardrobe.isSuccess && confirmedItems.length > 0
+  const currentWardrobeIds = new Set(confirmedItems.map(item => item.id))
   const usedWardrobeIds = new Set(
     (history.data ?? [])
       .flatMap(outfit => outfit.selected_item_ids)
@@ -70,13 +74,13 @@ export default function Dashboard({ onNavigate }: Props) {
     const createdAt = new Date(outfit.created_at).getTime()
     return createdAt >= weekStartedAt && createdAt <= now
   }).length
-  const wardrobeUtilised = wardrobeItems.length === 0
+  const wardrobeUtilised = confirmedItems.length === 0
     ? 0
-    : Math.round((usedWardrobeIds.size / wardrobeItems.length) * 100)
+    : Math.round((usedWardrobeIds.size / confirmedItems.length) * 100)
 
   const wardrobeValue = wardrobe.isPending
     ? '…'
-    : wardrobe.isError ? '—' : String(wardrobeItems.length)
+    : wardrobe.isError ? '—' : String(confirmedItems.length)
   const outfitsValue = history.isPending
     ? '…'
     : history.isError ? '—' : String(outfitsThisWeek)
@@ -85,7 +89,7 @@ export default function Dashboard({ onNavigate }: Props) {
     : wardrobe.isError || history.isError ? '—' : `${wardrobeUtilised}%`
 
   const handleAsk = () => {
-    if (!hasQuery) return
+    if (!hasQuery || !canStartStylist) return
     onNavigate('stylist', query.trim())
   }
 
@@ -174,6 +178,7 @@ export default function Dashboard({ onNavigate }: Props) {
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleAsk()}
+              disabled={!canStartStylist}
               placeholder="Describe an occasion…"
               style={{
                 flex: 1, background: 'transparent', border: 'none', outline: 'none',
@@ -182,12 +187,12 @@ export default function Dashboard({ onNavigate }: Props) {
                 paddingRight: 12,
               }}
             />
-            <button onClick={handleAsk} disabled={!hasQuery} style={{
+            <button onClick={handleAsk} disabled={!hasQuery || !canStartStylist} style={{
               fontFamily: 'DM Sans, sans-serif', fontSize: 13, fontWeight: 600,
               background: '#f0ece4', color: '#100f0d',
               border: 'none', borderRadius: 999,
-              padding: '10px 22px', cursor: hasQuery ? 'pointer' : 'not-allowed',
-              opacity: hasQuery ? 1 : 0.45,
+              padding: '10px 22px', cursor: hasQuery && canStartStylist ? 'pointer' : 'not-allowed',
+              opacity: hasQuery && canStartStylist ? 1 : 0.45,
               whiteSpace: 'nowrap',
               transition: 'transform 0.15s, opacity 0.15s',
             }}>
@@ -200,17 +205,44 @@ export default function Dashboard({ onNavigate }: Props) {
             {['Interview tomorrow', 'Weekend brunch', 'First date', 'Gallery opening'].map(p => (
               <button key={p}
                 onClick={() => { setQuery(p); onNavigate('stylist', p) }}
+                disabled={!canStartStylist}
                 style={{
                   fontFamily: 'DM Sans, sans-serif', fontSize: 12,
                   color: 'rgba(255,255,255,0.55)',
                   background: 'transparent', border: '1px solid rgba(255,255,255,0.15)',
-                  borderRadius: 999, padding: '6px 14px', cursor: 'pointer',
+                  borderRadius: 999, padding: '6px 14px',
+                  cursor: canStartStylist ? 'pointer' : 'not-allowed',
+                  opacity: canStartStylist ? 1 : 0.45,
                   transition: 'border-color 0.2s, color 0.2s',
                 }}>
                 {p}
               </button>
             ))}
           </div>
+          {wardrobe.isError && (
+            <div role="alert" style={{ color: '#f0c4be', fontSize: 13, marginTop: 16 }}>
+              Could not load your wardrobe.{' '}
+              <button
+                type="button"
+                onClick={() => void wardrobe.refetch()}
+                style={{ border: 0, background: 'transparent', color: '#f0ece4', padding: 0, textDecoration: 'underline', cursor: 'pointer' }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {wardrobe.isSuccess && confirmedItems.length === 0 && (
+            <div style={{ color: 'rgba(240,236,228,0.7)', fontSize: 13, marginTop: 16 }}>
+              Add and confirm your first wardrobe piece before using the Stylist.{' '}
+              <button
+                type="button"
+                onClick={() => onNavigate('upload')}
+                style={{ border: 0, background: 'transparent', color: '#f0ece4', padding: 0, textDecoration: 'underline', cursor: 'pointer' }}
+              >
+                Add piece
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Bottom fade into cream */}
@@ -229,6 +261,11 @@ export default function Dashboard({ onNavigate }: Props) {
         justifyContent: 'center',
         flexWrap: 'wrap',
       }}>
+        {(wardrobe.isError || history.isError) && (
+          <p role="alert" style={{ width: '100%', textAlign: 'center', color: '#d8c6ad', fontSize: 12 }}>
+            Some wardrobe information could not be loaded.
+          </p>
+        )}
         {[
           { n: wardrobeValue, label: 'pieces in wardrobe' },
           { n: outfitsValue, label: 'outfits this week' },
@@ -274,7 +311,7 @@ export default function Dashboard({ onNavigate }: Props) {
                 lineHeight: 1.7, color: '#6b6055',
                 maxWidth: 360, marginBottom: 40,
               }}>
-                Upload your clothing once. Cobaju handles categorisation, colour-matching, and occasion tagging automatically.
+                Upload your clothing once. Cobaju analyses visible details for you to review and confirm.
               </p>
               <button onClick={() => onNavigate('wardrobe')} style={{
                 fontFamily: 'DM Sans, sans-serif', fontSize: 13,
@@ -340,7 +377,7 @@ export default function Dashboard({ onNavigate }: Props) {
             {[
               {
                 n: '01', title: 'Build your wardrobe',
-                desc: 'Upload photos of your clothing. AI tags each piece with category, colour, and occasion.',
+                desc: 'Upload photos of your clothing. AI analyses category, colour, and visible details for your review.',
                 img: 'https://images.unsplash.com/photo-1731589802397-6a1088d63630?w=500&h=380&fit=crop&auto=format',
               },
               {
@@ -350,7 +387,7 @@ export default function Dashboard({ onNavigate }: Props) {
               },
               {
                 n: '03', title: 'Wear with confidence',
-                desc: 'Get a scored outfit with reasons. Save it to your lookbook.',
+                desc: 'Get a wardrobe-grounded outfit reviewed by the Style Critic. Save it to your Lookbook when you choose.',
                 img: 'https://images.unsplash.com/photo-1613915617430-8ab0fd7c6baf?w=500&h=380&fit=crop&auto=format',
               },
             ].map(step => (

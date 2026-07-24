@@ -124,7 +124,7 @@ def create_item(
     except WardrobeLimitReachedError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Wardrobe limit of 15 confirmed items reached",
+            detail="Wardrobe limit of 50 confirmed items reached",
         ) from error
     except WardrobeVectorError as error:
         raise retrieval_unavailable_response() from error
@@ -497,7 +497,7 @@ def confirm_item_metadata(
     except WardrobeLimitReachedError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Wardrobe limit of 15 confirmed items reached",
+            detail="Wardrobe limit of 50 confirmed items reached",
         ) from error
     except WardrobeVectorError as error:
         raise retrieval_unavailable_response() from error

@@ -1,6 +1,6 @@
 {
-  "title": "wardrobe assistant",
-  "description": "Transforms standard HTML content into an engaging, Pinterest-style visual layout to enhance user experience and content discovery.",
+  "title": "Cobaju",
+  "description": "An AI wardrobe assistant that creates outfit recommendations from clothes you already own.",
   "robots": {
     "index": false
   },

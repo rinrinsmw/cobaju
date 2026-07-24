@@ -5,8 +5,17 @@ import { ApiError, apiRequest, type ClothingCategory, type ClothingItem, type Cl
 
 interface Props { onNavigate: (page: Page) => void }
 type Stage = 'idle' | 'uploading' | 'analyzing' | 'done' | 'error'
+type RecoveryAction = 'check-status' | 'retry-analysis' | 'none'
 const categories: ClothingCategory[] = ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'bag', 'accessory']
 const delay = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
+const supportedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const maximumImageBytes = 5 * 1024 * 1024
+
+interface FieldErrors {
+  name?: string
+  color?: string
+  description?: string
+}
 
 export default function Upload({ onNavigate }: Props) {
   const queryClient = useQueryClient()
@@ -17,14 +26,15 @@ export default function Upload({ onNavigate }: Props) {
   const [item, setItem] = useState<ClothingItem | null>(null)
   const [analysisToken, setAnalysisToken] = useState('')
   const [error, setError] = useState('')
+  const [recoveryAction, setRecoveryAction] = useState<RecoveryAction>('none')
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [saving, setSaving] = useState(false)
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview) }, [preview])
 
-  const runAnalysis = async (draft: ClothingItem, pollingToken: string) => {
-    setError(''); setStage('analyzing')
+  const pollAnalysis = async (draft: ClothingItem, pollingToken: string) => {
+    setError(''); setRecoveryAction('none'); setStage('analyzing')
     try {
-      await apiRequest(`/wardrobe/items/${draft.id}/analyze`, { method: 'POST' })
       for (let attempt = 0; attempt < 90; attempt += 1) {
         await delay(1000)
         const status = await apiRequest<ProcessingResult>(`/wardrobe/items/${draft.id}/status?analysis_token=${encodeURIComponent(pollingToken)}`)
@@ -33,19 +43,74 @@ export default function Upload({ onNavigate }: Props) {
           setStage('done')
           return
         }
-        if (status.status === 'failed') throw new Error('Cobaju could not identify one clear clothing item in this image.')
+        if (status.status === 'failed') {
+          setError('Analysis failed. You can try the analysis again or choose another image.')
+          setRecoveryAction('retry-analysis')
+          setStage('error')
+          return
+        }
       }
-      throw new Error('Analysis is taking longer than expected. You can retry from this page.')
+      setError('Analysis is still processing, but status checks timed out while waiting.')
+      setRecoveryAction('check-status')
+      setStage('error')
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 422) setItem(null)
-      setError(caught instanceof Error ? caught.message : 'Analysis failed.')
+      if (caught instanceof ApiError && caught.status === 422) {
+        setItem(null)
+        setRecoveryAction('none')
+      } else {
+        setRecoveryAction('check-status')
+      }
+      setError(
+        caught instanceof ApiError && caught.status === 422
+          ? caught.message
+          : 'Could not check the analysis status. The item may still be processing.',
+      )
       setStage('error')
     }
   }
 
+  const runAnalysis = async (draft: ClothingItem, pollingToken: string) => {
+    setError(''); setRecoveryAction('none'); setStage('analyzing')
+    try {
+      await apiRequest(`/wardrobe/items/${draft.id}/analyze`, { method: 'POST' })
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 409) {
+        await pollAnalysis(draft, pollingToken)
+        return
+      }
+      setError(caught instanceof Error ? caught.message : 'Analysis could not be started.')
+      setRecoveryAction('retry-analysis')
+      setStage('error')
+      return
+    }
+    await pollAnalysis(draft, pollingToken)
+  }
+
+  const validateFile = (file: File) => {
+    if (!supportedImageTypes.has(file.type)) {
+      return 'Choose a JPG, PNG, or WebP image.'
+    }
+    if (file.size > maximumImageBytes) {
+      return 'Choose an image no larger than 5 MB.'
+    }
+    return ''
+  }
+
+  const selectFile = (file: File) => {
+    const validationError = validateFile(file)
+    if (validationError) {
+      setError(validationError)
+      setRecoveryAction('none')
+      setStage('idle')
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    void upload(file)
+  }
+
   const upload = async (file: File) => {
     if (preview) URL.revokeObjectURL(preview)
-    setPreview(URL.createObjectURL(file)); setError(''); setStage('uploading')
+    setPreview(URL.createObjectURL(file)); setError(''); setRecoveryAction('none'); setStage('uploading')
     const form = new FormData(); form.append('image', file)
     try {
       const draft = await apiRequest<ClothingUpload>('/wardrobe/items/upload', { method: 'POST', body: form })
@@ -58,15 +123,34 @@ export default function Upload({ onNavigate }: Props) {
     }
   }
 
-  const choose = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) void upload(file) }
-  const drop = (event: DragEvent) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer.files[0]; if (file) void upload(file) }
-  const change = (field: keyof ClothingItem, value: string) => setItem(current => current ? { ...current, [field]: value } : current)
+  const choose = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) selectFile(file) }
+  const drop = (event: DragEvent) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer.files[0]; if (file) selectFile(file) }
+  const change = (field: keyof ClothingItem, value: string) => {
+    setItem(current => current ? { ...current, [field]: value } : current)
+    if (field === 'name' || field === 'color' || field === 'description') {
+      setFieldErrors(current => ({ ...current, [field]: undefined }))
+    }
+  }
 
   const save = async () => {
     if (!item) return
+    const name = item.name.trim()
+    const color = item.color.trim()
+    const description = item.description?.trim() || null
+    const validationErrors: FieldErrors = {}
+    if (!name) validationErrors.name = 'Enter a name.'
+    else if (name.length > 100) validationErrors.name = 'Use 100 characters or fewer.'
+    if (!color) validationErrors.color = 'Enter a colour.'
+    else if (color.length > 50) validationErrors.color = 'Use 50 characters or fewer.'
+    if (description && description.length > 500) {
+      validationErrors.description = 'Use 500 characters or fewer.'
+    }
+    setFieldErrors(validationErrors)
+    if (Object.keys(validationErrors).length > 0) return
+
     setSaving(true); setError('')
     try {
-      await apiRequest(`/wardrobe/items/${item.id}`, { method: 'PATCH', body: JSON.stringify({ name: item.name, category: item.category, color: item.color, description: item.description }) })
+      await apiRequest(`/wardrobe/items/${item.id}`, { method: 'PATCH', body: JSON.stringify({ name, category: item.category, color, description }) })
       await apiRequest(`/wardrobe/items/${item.id}/confirm`, { method: 'POST' })
       await queryClient.invalidateQueries({ queryKey: ['wardrobe'] })
       onNavigate('wardrobe')
@@ -89,13 +173,13 @@ export default function Upload({ onNavigate }: Props) {
         </div>}
       </div>
       <div>
-        {stage === 'idle' && <Intro />}
+        {stage === 'idle' && <><Intro />{error && <p role="alert" style={{ color: '#9f3a32', fontSize: 13, marginTop: 18 }}>{error}</p>}</>}
         {(stage === 'uploading' || stage === 'analyzing') && <Processing stage={stage} />}
-        {stage === 'error' && <div><h2 style={sectionTitle}>Something needs attention</h2><p role="alert" style={{ color: '#9f3a32', lineHeight: 1.6, marginBottom: 24 }}>{error}</p>{item && analysisToken && <button onClick={() => void runAnalysis(item, analysisToken)} style={darkButton}>Retry analysis</button>}<button onClick={() => { setStage('idle'); setItem(null); setAnalysisToken(''); setError('') }} style={secondaryButton}>Choose another image</button></div>}
+        {stage === 'error' && <div><h2 style={sectionTitle}>Something needs attention</h2><p role="alert" style={{ color: '#9f3a32', lineHeight: 1.6, marginBottom: 24 }}>{error}</p>{item && analysisToken && recoveryAction === 'check-status' && <button onClick={() => void pollAnalysis(item, analysisToken)} style={darkButton}>Check status again</button>}{item && analysisToken && recoveryAction === 'retry-analysis' && <button onClick={() => void runAnalysis(item, analysisToken)} style={darkButton}>Try analysis again</button>}<button onClick={() => { setStage('idle'); setItem(null); setAnalysisToken(''); setError(''); setRecoveryAction('none'); setFieldErrors({}); if (inputRef.current) inputRef.current.value = '' }} style={secondaryButton}>Choose another image</button></div>}
         {stage === 'done' && item && <div><h2 style={sectionTitle}>Analysis complete</h2><div style={{ display: 'grid', gap: 14 }}>
-          <Field label="Name"><input value={item.name} onChange={event => change('name', event.target.value)} style={fieldStyle} /></Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><Field label="Category"><select value={item.category} onChange={event => change('category', event.target.value)} style={fieldStyle}>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Colour"><input value={item.color} onChange={event => change('color', event.target.value)} style={fieldStyle} /></Field></div>
-          <Field label="Description"><textarea value={item.description ?? ''} onChange={event => change('description', event.target.value)} rows={4} style={fieldStyle} /></Field>
+          <Field label="Name" error={fieldErrors.name}><input value={item.name} maxLength={100} onChange={event => change('name', event.target.value)} style={fieldStyle} /></Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><Field label="Category"><select value={item.category} onChange={event => change('category', event.target.value)} style={fieldStyle}>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Colour" error={fieldErrors.color}><input value={item.color} maxLength={50} onChange={event => change('color', event.target.value)} style={fieldStyle} /></Field></div>
+          <Field label="Description" error={fieldErrors.description}><textarea value={item.description ?? ''} maxLength={500} onChange={event => change('description', event.target.value)} rows={4} style={fieldStyle} /></Field>
           {error && <p role="alert" style={{ color: '#9f3a32', fontSize: 13 }}>{error}</p>}
           <button disabled={saving} onClick={() => void save()} style={darkButton}>{saving ? 'Saving…' : 'Save to wardrobe'}</button>
         </div></div>}
@@ -106,7 +190,7 @@ export default function Upload({ onNavigate }: Props) {
 
 function Intro() { return <><h2 style={sectionTitle}>AI will handle the rest</h2><p style={{ color: '#6b6055', lineHeight: 1.7, marginBottom: 38 }}>Upload a clear photo of one clothing item. Cobaju identifies its category, colour, and description for your review.</p>{['Upload one clear item', 'Analyse visible details', 'Review and save'].map((text, index) => <div key={text} style={{ display: 'flex', gap: 18, padding: '13px 0', borderBottom: '1px solid rgba(0,0,0,.07)' }}><span style={{ color: '#c9a96e' }}>0{index + 1}</span>{text}</div>)}</> }
 function Processing({ stage }: { stage: Stage }) { return <><h2 style={sectionTitle}>Processing…</h2>{['Image and record created', 'Clothing guardrail', 'Metadata analysis'].map((text, index) => <div key={text} style={{ padding: '14px 0', borderBottom: '1px solid rgba(0,0,0,.07)', color: index === 0 || stage === 'analyzing' ? '#1a1816' : '#a09080' }}>{index === 0 ? '✓ ' : '○ '}{text}</div>)}</> }
-function Field({ label, children }: { label: string; children: ReactNode }) { return <label style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: '#a09080' }}>{label}{children}</label> }
+function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) { return <label style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: '#a09080' }}>{label}{children}{error && <span role="alert" style={{ display: 'block', marginTop: 5, color: '#9f3a32', letterSpacing: 0, textTransform: 'none' }}>{error}</span>}</label> }
 
 const eyebrow = { fontSize: 11, letterSpacing: '.16em', textTransform: 'uppercase' as const, color: '#a09080', marginBottom: 16 }
 const title = { fontFamily: "'Playfair Display', serif", fontSize: 'clamp(36px, 4vw, 56px)', lineHeight: 1.05 }
