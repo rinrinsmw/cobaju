@@ -48,6 +48,33 @@ async function unmount(root: Root) {
   await act(async () => root.unmount())
 }
 
+describe('authentication screen', () => {
+  it('explains Cobaju value before a visitor creates an account', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider><AuthBoundary /></AuthProvider>
+        </QueryClientProvider>,
+      )
+    })
+
+    const createAccountSwitch = [...document.querySelectorAll('button')]
+      .find(element => element.textContent === 'New here? Create an account')
+    await act(async () => createAccountSwitch?.click())
+
+    expect(document.body.textContent).toContain('Build outfits from clothes you already own.')
+    expect(document.body.textContent).toContain('Upload your wardrobe and get personalized AI outfit recommendations.')
+    expect(document.body.textContent).toContain('Private wardrobe · AI styling · No invented items')
+
+    await unmount(root)
+  })
+})
+
 describe('centralized expired-session handling', () => {
   let mountedRoot: Root | undefined
 
