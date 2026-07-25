@@ -9,7 +9,11 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
-from app.schemas.wardrobe import ClothingGuardrailResult, ClothingMetadata
+from app.schemas.wardrobe import (
+    ClothingMetadata,
+    GarmentSubjectGuardrailResult,
+    ImageMediumGuardrailResult,
+)
 from app.services.clothing_analysis import ClothingAnalysisError
 
 
@@ -25,45 +29,65 @@ class OpenRouterResponseError(ClothingAnalysisError):
 
 
 class OpenRouterVisionProvider:
-    """Call two independently configured vision tasks through OpenRouter."""
+    """Call independently scoped vision tasks through OpenRouter."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def classify_image(self, image_path: Path) -> ClothingGuardrailResult:
+    def classify_image_medium(
+        self,
+        image_path: Path,
+    ) -> ImageMediumGuardrailResult:
         prompt = (
-            "Classify this upload using the required evidence fields. Evaluate "
-            "image_medium first, before identifying any clothes. Use "
-            "real_photograph only for a camera photograph of a real scene. Use "
-            "non_photographic for every cartoon, illustration, vector drawing, "
-            "painting, anime image, meme, poster, screenshot, generated artwork, "
-            "3D render, or product drawing, even when the depicted clothing looks "
-            "realistic. Next identify the visually dominant primary_subject, not "
-            "the most interesting clothing category. A visible person wearing "
-            "clothes is person_or_face when the person, face, pose, or activity is "
-            "the main composition. Do not call their shirt a physical_garment "
-            "primary subject merely because its category and colour are visible. "
-            "For example, a drawn or cartoon person wearing a clear white button-up "
-            "shirt is non_photographic, person_or_face, and invalid_image. "
-            "valid_garment_photo requires all three facts: image_medium is "
-            "real_photograph, primary_subject is physical_garment, and "
-            "garment_visibility is clear enough to identify category and colour. "
-            "A real laid-flat garment or garment on a hanger may qualify. Return "
-            "invalid_image for non-photographic media, a person or face as primary, "
-            "incidental clothing, multiple unrelated subjects, unsafe content, or "
-            "no physical garment as the main subject. Return uncertain when it may "
-            "be a real garment photo but medium, subject, cropping, blur, "
-            "obstruction, or visibility cannot be judged confidently. When in "
-            "doubt between valid and uncertain, choose uncertain. Base every field "
-            "only on visible evidence and never on an extracted garment category."
+            "Perform only the image-medium gate. Do not identify clothing, infer a "
+            "garment category, or decide whether the upload belongs in a wardrobe. "
+            "Classify the depicted visual content, not merely the file format. Use "
+            "real_photograph only when the visible scene and its relevant subjects "
+            "are real physical objects captured by a camera. Use non_photographic "
+            "for cartoons, illustrations, vector drawings, paintings, anime, memes, "
+            "posters, screenshots, generated artwork, 3D renders, product drawings, "
+            "and photographs or screenshots whose relevant depicted subject is "
+            "artwork. A drawn person wearing a realistic white button-up shirt is "
+            "non_photographic. Use uncertain whenever photographic authenticity "
+            "cannot be judged confidently. When in doubt between real_photograph "
+            "and uncertain, choose uncertain. Explain only visible evidence."
         )
         return self._request(
             image_path=image_path,
             model=self.settings.openrouter_guardrail_model,
             temperature=self.settings.guardrail_temperature,
             prompt=prompt,
-            schema=ClothingGuardrailResult,
-            schema_name="clothing_guardrail",
+            schema=ImageMediumGuardrailResult,
+            schema_name="image_medium_guardrail",
+        )
+
+    def classify_garment_subject(
+        self,
+        image_path: Path,
+    ) -> GarmentSubjectGuardrailResult:
+        prompt = (
+            "Perform only the garment-subject gate. Identify the visually dominant "
+            "primary subject of the whole composition, not the most recognizable "
+            "clothing category. Use physical_garment only when one real garment, "
+            "shoe, bag, or fashion accessory is presented as the main standalone "
+            "subject, such as laid flat, on a hanger, or in a product-style photo. "
+            "Use person_or_face whenever a visible person, face, body, pose, or "
+            "activity is the main composition, even if their clothing is large, "
+            "clear, and easy to describe. Do not classify a shirt worn by the main "
+            "person as physical_garment. Use multiple_or_unrelated for multiple "
+            "competing items, unsafe content, or an unrelated main subject. Use "
+            "uncertain whenever the dominant subject cannot be judged confidently. "
+            "Set garment_visibility to clear only when the standalone physical "
+            "garment is sufficiently visible to identify category and colour; "
+            "otherwise use unclear or not_applicable. Explain only visible evidence."
+        )
+        return self._request(
+            image_path=image_path,
+            model=self.settings.openrouter_guardrail_model,
+            temperature=self.settings.guardrail_temperature,
+            prompt=prompt,
+            schema=GarmentSubjectGuardrailResult,
+            schema_name="garment_subject_guardrail",
         )
 
     def analyze_image(self, image_path: Path) -> ClothingMetadata:

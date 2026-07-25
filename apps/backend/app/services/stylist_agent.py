@@ -31,6 +31,7 @@ from app.observability import (
     Observation,
     Observability,
     agent_usage_details,
+    current_request_context,
     finish_model_attempt,
     finish_tool_call,
     start_model_attempt,
@@ -436,15 +437,40 @@ def _ground_recommendation_prose(
     return StylistResponse.model_validate(grounded.model_dump())
 
 
+def _model_response_usage_details(response: Any) -> dict[str, int]:
+    """Return provider request and token counts for one model-loop response."""
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"requests": 1, "input": 0, "output": 0, "total": 0}
+    return {
+        "requests": max(1, int(getattr(usage, "requests", 0))),
+        "input": int(getattr(usage, "input_tokens", 0)),
+        "output": int(getattr(usage, "output_tokens", 0)),
+        "total": int(getattr(usage, "total_tokens", 0)),
+    }
+
+
 class _ModelAttemptHooks(RunHooks[None]):
     def __init__(
         self,
         stage: str,
         observability: Observability | None = None,
+        cached_evidence: GetStylingCandidatesOutput | None = None,
+        lifecycle_metrics: StylistLifecycleMetrics | None = None,
+        model_name: str = "",
+        prompt_version: str = "",
     ) -> None:
         self.stage = stage
         self.observability = observability
-        self.attempt_ids: list[str | None] = []
+        self.cached_evidence = cached_evidence
+        self.lifecycle_metrics = lifecycle_metrics
+        self.model_name = model_name
+        self.prompt_version = prompt_version
+        self.attempts: list[
+            tuple[str | None, float, Observation | None]
+        ] = []
+        self.agent_tool_names: list[str] = []
         self.active_tool_calls: list[
             tuple[str, float, Observation | None, dict[str, Any] | None]
         ] = []
@@ -453,27 +479,62 @@ class _ModelAttemptHooks(RunHooks[None]):
         self, context: Any, agent: Any, system_prompt: Any, input_items: Any
     ) -> None:
         del context, agent, system_prompt, input_items
-        self.attempt_ids.append(start_model_attempt(self.stage))
+        observation = None
+        if self.observability is not None:
+            observation = self.observability.start_observation(
+                f"{self.stage}.attempt",
+                as_type="generation",
+                model=self.model_name,
+                metadata={
+                    "stage": self.stage,
+                    "prompt_version": self.prompt_version,
+                },
+            )
+        self.attempts.append(
+            (start_model_attempt(self.stage), time.perf_counter(), observation)
+        )
 
     async def on_llm_end(self, context: Any, agent: Any, response: Any) -> None:
-        del context, agent, response
-        if self.attempt_ids:
-            finish_model_attempt(self.attempt_ids.pop())
+        del context, agent
+        if self.attempts:
+            attempt_id, started, observation = self.attempts.pop()
+            finish_model_attempt(attempt_id)
+            if observation is not None:
+                usage = _model_response_usage_details(response)
+                observation.update(
+                    output={
+                        "status": "completed",
+                        "request_count": usage["requests"],
+                        "latency_ms": round(
+                            (time.perf_counter() - started) * 1000, 2
+                        ),
+                    },
+                    usage_details=usage,
+                )
+                observation.end()
 
     async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
         del context, agent
+        self.agent_tool_names.append(tool.name)
+        invocation_number = self.agent_tool_names.count(tool.name)
         observation = None
         if self.observability is not None:
             observation = self.observability.start_observation(
                 f"agent.{tool.name}",
                 as_type="tool",
+                input={"arguments": {}, "argument_count": 0},
+                metadata={
+                    "tool_name": tool.name,
+                    "invocation_number": invocation_number,
+                    "zero_argument_invocation": True,
+                },
             )
         self.active_tool_calls.append(
             (
                 tool.name,
                 time.perf_counter(),
                 observation,
-                start_tool_call(tool.name),
+                start_tool_call(tool.name, tool_kind="agent"),
             )
         )
 
@@ -491,8 +552,23 @@ class _ModelAttemptHooks(RunHooks[None]):
         self._finish_tool(active, success=True, result=result)
 
     def close(self, error: BaseException) -> None:
-        while self.attempt_ids:
-            finish_model_attempt(self.attempt_ids.pop(), error=error)
+        while self.attempts:
+            attempt_id, started, observation = self.attempts.pop()
+            finish_model_attempt(attempt_id, error=error)
+            if observation is not None:
+                observation.update(
+                    output={
+                        "status": "failed",
+                        "latency_ms": round(
+                            (time.perf_counter() - started) * 1000, 2
+                        ),
+                        "stage": self.stage,
+                        "error_type": type(error).__name__,
+                    },
+                    level="ERROR",
+                    status_message=type(error).__name__,
+                )
+                observation.end()
         while self.active_tool_calls:
             self._finish_tool(
                 self.active_tool_calls.pop(),
@@ -525,14 +601,31 @@ class _ModelAttemptHooks(RunHooks[None]):
             success=success,
         )
         if observation is not None:
-            output: dict[str, object] = {"success": success}
-            if isinstance(result, GetStylingCandidatesOutput):
-                output["candidate_count"] = len(result.candidate_items)
+            evidence_count = (
+                len(self.cached_evidence.candidate_items)
+                if self.cached_evidence is not None
+                else 0
+            )
+            lifecycle_call_count = (
+                self.lifecycle_metrics.cached_evidence_tool_call_count
+                if self.lifecycle_metrics is not None
+                else self.agent_tool_names.count(name)
+            )
+            output: dict[str, object] = {
+                "success": success,
+                "cached_evidence_item_count": evidence_count,
+                "lifecycle_call_count": lifecycle_call_count,
+            }
             observation.update(
                 output=output,
                 level="DEFAULT" if success else "ERROR",
                 status_message=type(error).__name__ if error else None,
-                metadata={"tool_name": name, "duration_ms": duration_ms},
+                metadata={
+                    "tool_name": name,
+                    "duration_ms": duration_ms,
+                    "zero_argument_invocation": True,
+                    "lifecycle_call_count": lifecycle_call_count,
+                },
             )
             observation.end()
 
@@ -553,6 +646,19 @@ class RequestScopedStylist:
 
     async def run(self, message: str) -> StylistRunOutcome:
         categories, anchor_item_id = _infer_candidate_request(message)
+        request_context = current_request_context()
+        if request_context is not None and request_context.root_observation is not None:
+            request_context.root_observation.update(
+                metadata={
+                    "workflow_name": "stylist_request",
+                    "prompt_version": self.owner.settings.stylist_prompt_version,
+                    "model_name": self.owner.settings.openrouter_stylist_model,
+                    "candidate_categories": [
+                        category.value for category in categories
+                    ],
+                    "anchor_item_requested": anchor_item_id is not None,
+                }
+            )
         bundle = await self._get_styling_candidates(
             message, categories, anchor_item_id
         )
@@ -573,6 +679,7 @@ class RequestScopedStylist:
             else nullcontext()
         )
         with generation_scope as generation_observation:
+            generation_started = time.perf_counter()
             try:
                 response = await self.owner._generate(
                     instructions=_STYLIST_INSTRUCTIONS,
@@ -583,14 +690,23 @@ class RequestScopedStylist:
                     temperature=self.owner.settings.stylist_temperature,
                     prompt_version=self.owner.settings.stylist_prompt_version,
                     tools=[cached_evidence_tool],
+                    cached_evidence=bundle,
+                    lifecycle_metrics=self.metrics,
                 )
             except Exception as error:
                 if generation_observation is not None:
                     generation_observation.update(
                         output={
                             "status": "failed",
-                            "failure_reason": type(error).__name__,
-                        }
+                            "stage": "stylist_model",
+                            "error_type": type(error).__name__,
+                            "latency_ms": round(
+                                (time.perf_counter() - generation_started) * 1000,
+                                2,
+                            ),
+                        },
+                        level="ERROR",
+                        status_message=type(error).__name__,
                     )
                 raise
             if self.metrics.cached_evidence_tool_call_count == 0:
@@ -599,7 +715,12 @@ class RequestScopedStylist:
                 )
             if generation_observation is not None:
                 generation_observation.update(
-                    output={"status": "completed", "failure_reason": None}
+                    output={
+                        "status": "completed",
+                        "latency_ms": round(
+                            (time.perf_counter() - generation_started) * 1000, 2
+                        ),
+                    }
                 )
         response = _ground_recommendation_prose(response, bundle.candidate_items)
         return StylistRunOutcome(
@@ -689,6 +810,13 @@ class RequestScopedStylist:
                 "anchor_item_id": anchor_item_id,
                 "limit_per_category": self.owner.settings.styling_candidates_per_category,
             },
+            safe_input={
+                "candidate_categories": [category.value for category in categories],
+                "anchor_item_requested": anchor_item_id is not None,
+                "limit_per_category": (
+                    self.owner.settings.styling_candidates_per_category
+                ),
+            },
         )
         self.metrics.retrieval_duration_ms = round(
             (time.perf_counter() - started) * 1000, 2
@@ -701,7 +829,13 @@ class RequestScopedStylist:
         self.metrics.candidate_count = len(bundle.candidate_items)
         return bundle
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        safe_input: dict[str, Any] | None = None,
+    ) -> Any:
         if self.metrics.tool_call_count >= self.owner.settings.stylist_max_tool_calls:
             raise ToolCallLimitExceeded("Stylist tool-call limit exceeded")
         self.metrics.tool_call_count += 1
@@ -713,6 +847,7 @@ class RequestScopedStylist:
             observation = self.owner.observability.start_observation(
                 f"mcp.{name}",
                 as_type="tool",
+                input=safe_input,
                 metadata={"invocation_number": self.tool_names.count(name)},
             )
         try:
@@ -720,13 +855,31 @@ class RequestScopedStylist:
             if call_result.isError:
                 raise StylistAgentError(f"MCP tool {name} failed")
             parsed = _parse_tool_result(call_result)
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
             finish_tool_call(
                 diagnostic,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                duration_ms=duration_ms,
                 success=True,
             )
             if observation is not None:
-                observation.update(output={"success": True})
+                output: dict[str, Any] = {"success": True}
+                if name == "get_styling_candidates":
+                    try:
+                        candidates = GetStylingCandidatesOutput.model_validate(parsed)
+                    except (TypeError, ValueError):
+                        candidates = None
+                    if candidates is not None:
+                        output.update(
+                            candidate_count=len(candidates.candidate_items),
+                        )
+                observation.update(
+                    output=output,
+                    metadata={
+                        "tool_name": name,
+                        "duration_ms": duration_ms,
+                        "invocation_number": self.tool_names.count(name),
+                    },
+                )
                 observation.end()
             return parsed
         except Exception as error:
@@ -737,6 +890,13 @@ class RequestScopedStylist:
                     output={"success": False},
                     level="ERROR",
                     status_message=type(error).__name__,
+                    metadata={
+                        "tool_name": name,
+                        "duration_ms": duration_ms,
+                        "invocation_number": self.tool_names.count(name),
+                        "stage": f"mcp.{name}",
+                        "error_type": type(error).__name__,
+                    },
                 )
                 observation.end()
             if isinstance(error, StylistAgentError):
@@ -771,6 +931,8 @@ class OpenAIAgentsStylistRunner:
         temperature: float,
         prompt_version: str,
         tools: list[FunctionTool] | None = None,
+        cached_evidence: GetStylingCandidatesOutput | None = None,
+        lifecycle_metrics: StylistLifecycleMetrics | None = None,
     ) -> StylistResponse:
         api_key = self.settings.openrouter_api_key.get_secret_value()
         model_name = self.settings.openrouter_stylist_model
@@ -793,7 +955,14 @@ class OpenAIAgentsStylistRunner:
         )
         try:
             for attempt in range(2):
-                hooks = _ModelAttemptHooks(stage, self.observability)
+                hooks = _ModelAttemptHooks(
+                    stage,
+                    self.observability,
+                    cached_evidence=cached_evidence,
+                    lifecycle_metrics=lifecycle_metrics,
+                    model_name=model_name,
+                    prompt_version=prompt_version,
+                )
                 try:
                     result = await Runner.run(
                         agent,

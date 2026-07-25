@@ -91,6 +91,7 @@ class LangfuseBackend:
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key.get_secret_value(),
             base_url=settings.langfuse_base_url,
+            environment=settings.app_environment,
             release=settings.app_version,
         )
 
@@ -132,10 +133,12 @@ class RequestContext:
     endpoint: str
     trace_id: str | None = None
     user_id: str | None = None
+    internal_user_id: int | None = None
     root_observation: Observation | None = None
     started_at: float = field(default_factory=time.perf_counter)
     failing_stage: str = "request"
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    agent_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     model_attempts: list[dict[str, Any]] = field(default_factory=list)
     validation_failures: list[str] = field(default_factory=list)
     evaluator_failures: list[str] = field(default_factory=list)
@@ -160,9 +163,15 @@ def bind_authenticated_user(user_id: int) -> None:
 
     context = current_request_context()
     if context is not None:
+        context.internal_user_id = user_id
         context.user_id = user_observability_id(user_id)
         if context.root_observation is not None:
-            context.root_observation.update(metadata={"user_id": context.user_id})
+            context.root_observation.update(
+                metadata={
+                    "user_id": context.user_id,
+                    "authenticated_internal_user_id": user_id,
+                }
+            )
 
 
 def user_observability_id(user_id: int) -> str:
@@ -274,18 +283,24 @@ def finish_model_attempt(
         record["error_type"] = type(error).__name__
 
 
-def start_tool_call(name: str) -> dict[str, Any] | None:
-    """Append one MCP call at start so parallel completion cannot reorder it."""
+def start_tool_call(
+    name: str, *, tool_kind: str = "mcp"
+) -> dict[str, Any] | None:
+    """Append one tool call without combining MCP and agent-tool semantics."""
 
     context = current_request_context()
     if context is None:
         return None
+    records = (
+        context.agent_tool_calls if tool_kind == "agent" else context.tool_calls
+    )
     record: dict[str, Any] = {
-        "order": len(context.tool_calls) + 1,
+        "order": len(records) + 1,
         "name": name,
+        "tool_kind": tool_kind,
         "status": "started",
     }
-    context.tool_calls.append(record)
+    records.append(record)
     return record
 
 
@@ -311,6 +326,8 @@ def stylist_failure_fields() -> dict[str, Any]:
             "failing_stage": "unknown",
             "duration_ms": 0,
             "tool_call_count": 0,
+            "agent_tool_call_count": 0,
+            "agent_tool_calls": [],
             "model_attempt_count": 0,
             "validation_failures": [],
             "evaluator_failures": [],
@@ -324,6 +341,8 @@ def stylist_failure_fields() -> dict[str, Any]:
         ),
         "model_attempt_count": len(context.model_attempts),
         "tool_calls": context.tool_calls,
+        "agent_tool_call_count": len(context.agent_tool_calls),
+        "agent_tool_calls": context.agent_tool_calls,
         "model_attempts": context.model_attempts,
         "validation_failures": context.validation_failures,
         "evaluator_failures": context.evaluator_failures,
@@ -382,24 +401,23 @@ class Observability:
         metadata: dict[str, Any] | None = None,
         **attributes: Any,
     ) -> AbstractContextManager[Observation | None]:
-        common_metadata = {
-            "application_version": self.settings.app_version,
-            "provider": "openrouter",
-        }
+        common_metadata = self._common_metadata()
         context = current_request_context()
         if context:
             common_metadata.update(
                 request_id=context.request_id,
                 user_id=context.user_id,
+                authenticated_internal_user_id=context.internal_user_id,
             )
         common_metadata.update(metadata or {})
         try:
-            return self.backend.observe(
+            backend_context = self.backend.observe(
                 name, as_type=as_type, metadata=common_metadata, **attributes
             )
         except Exception:
             telemetry_logger.exception("Could not start telemetry observation %s", name)
             return nullcontext()
+        return _safe_observation_context(backend_context, name)
 
     def start_observation(
         self,
@@ -416,24 +434,35 @@ class Observability:
         detachment when the tool ends.
         """
 
-        common_metadata = {
-            "application_version": self.settings.app_version,
-            "provider": "openrouter",
-        }
+        common_metadata = self._common_metadata()
         context = current_request_context()
         if context:
             common_metadata.update(
                 request_id=context.request_id,
                 user_id=context.user_id,
+                authenticated_internal_user_id=context.internal_user_id,
             )
         common_metadata.update(metadata or {})
         try:
-            return self.backend.start_observation(
+            observation = self.backend.start_observation(
                 name, as_type=as_type, metadata=common_metadata, **attributes
+            )
+            return (
+                _SafeObservation(observation, name)
+                if observation is not None
+                else None
             )
         except Exception:
             telemetry_logger.exception("Could not start telemetry observation %s", name)
             return None
+
+    def _common_metadata(self) -> dict[str, Any]:
+        return {
+            "application_version": self.settings.app_version,
+            "environment": self.settings.app_environment,
+            "provider": "openrouter",
+            "release": self.settings.app_version,
+        }
 
     @contextmanager
     def request_trace(
@@ -446,7 +475,10 @@ class Observability:
                 "stylist_request",
                 as_type="chain",
                 input={"endpoint": endpoint},
-                metadata={"request_id": request_id},
+                metadata={
+                    "request_id": request_id,
+                    "workflow_name": "stylist_request",
+                },
             ) as observation:
                 if observation is not None:
                     context.trace_id = observation.trace_id
@@ -469,10 +501,14 @@ class Observability:
 
 
 def agent_usage_details(result: Any) -> dict[str, int]:
-    """Aggregate token usage exposed by the Agents SDK without estimating cost."""
+    """Aggregate request and token usage exposed by every Agents SDK response."""
 
     responses = getattr(result, "raw_responses", [])
+    reported_requests = sum(
+        getattr(response.usage, "requests", 0) for response in responses
+    )
     return {
+        "requests": reported_requests or len(responses),
         "input": sum(
             getattr(response.usage, "input_tokens", 0) for response in responses
         ),
@@ -483,6 +519,88 @@ def agent_usage_details(result: Any) -> dict[str, int]:
             getattr(response.usage, "total_tokens", 0) for response in responses
         ),
     }
+
+
+class _SafeObservation:
+    """Prevent an exporter or SDK method failure from changing application behavior."""
+
+    def __init__(self, observation: Observation, name: str) -> None:
+        self._observation = observation
+        self._name = name
+
+    @property
+    def trace_id(self) -> str | None:
+        try:
+            return self._observation.trace_id
+        except Exception:
+            telemetry_logger.exception(
+                "Could not read telemetry trace ID for %s", self._name
+            )
+            return None
+
+    def update(self, **attributes: Any) -> None:
+        try:
+            self._observation.update(**attributes)
+        except Exception:
+            telemetry_logger.exception(
+                "Could not update telemetry observation %s", self._name
+            )
+
+    def score_trace(
+        self, *, name: str, value: float | str, comment: str = ""
+    ) -> None:
+        try:
+            self._observation.score_trace(name=name, value=value, comment=comment)
+        except Exception:
+            telemetry_logger.exception(
+                "Could not score telemetry trace for %s", self._name
+            )
+
+    def end(self) -> None:
+        try:
+            self._observation.end()
+        except Exception:
+            telemetry_logger.exception(
+                "Could not end telemetry observation %s", self._name
+            )
+
+
+@contextmanager
+def _safe_observation_context(
+    backend_context: AbstractContextManager[Observation | None],
+    name: str,
+) -> Iterator[Observation | None]:
+    """Contain telemetry enter/exit failures while preserving application errors."""
+
+    try:
+        observation = backend_context.__enter__()
+    except Exception:
+        telemetry_logger.exception("Could not enter telemetry observation %s", name)
+        yield None
+        return
+
+    safe_observation = (
+        _SafeObservation(observation, name) if observation is not None else None
+    )
+    try:
+        yield safe_observation
+    except BaseException as application_error:
+        try:
+            backend_context.__exit__(
+                type(application_error),
+                application_error,
+                application_error.__traceback__,
+            )
+        except Exception:
+            telemetry_logger.exception(
+                "Could not close failed telemetry observation %s", name
+            )
+        raise
+    else:
+        try:
+            backend_context.__exit__(None, None, None)
+        except Exception:
+            telemetry_logger.exception("Could not close telemetry observation %s", name)
 
 
 @lru_cache

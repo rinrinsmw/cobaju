@@ -16,11 +16,11 @@ from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.models.user import User
 from app.routers import wardrobe as wardrobe_router
 from app.schemas.wardrobe import (
-    ClothingGuardrailDecision,
-    ClothingGuardrailResult,
     ClothingMetadata,
+    GarmentSubjectGuardrailResult,
     GarmentVisibility,
     ImageMedium,
+    ImageMediumGuardrailResult,
     ImagePrimarySubject,
 )
 from app.services.clothing_analysis import ClothingAnalysisError, ClothingAnalysisTracer
@@ -37,26 +37,45 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0mock-clothing\xff\xd9"
 
 
 class FakeVisionProvider:
-    """Deterministic replacement for both paid OpenRouter calls."""
+    """Deterministic replacement for the guardrail and metadata calls."""
 
     def __init__(self) -> None:
-        self.guardrail_decision = ClothingGuardrailDecision.VALID_GARMENT_PHOTO
         self.image_medium = ImageMedium.REAL_PHOTOGRAPH
         self.primary_subject = ImagePrimarySubject.PHYSICAL_GARMENT
         self.garment_visibility = GarmentVisibility.CLEAR
-        self.guardrail_reason = "Mocked guardrail decision"
-        self.classify_calls = 0
+        self.medium_reason = "Mocked real photograph"
+        self.subject_reason = "Mocked standalone garment"
+        self.medium_calls = 0
+        self.subject_calls = 0
         self.analyze_calls = 0
 
-    def classify_image(self, image_path: Path) -> ClothingGuardrailResult:
+    @property
+    def classify_calls(self) -> int:
+        """Keep aggregate assertions readable in the API workflow tests."""
+
+        return self.medium_calls + self.subject_calls
+
+    def classify_image_medium(
+        self,
+        image_path: Path,
+    ) -> ImageMediumGuardrailResult:
         assert image_path.read_bytes() == JPEG_BYTES
-        self.classify_calls += 1
-        return ClothingGuardrailResult(
-            decision=self.guardrail_decision,
+        self.medium_calls += 1
+        return ImageMediumGuardrailResult(
             image_medium=self.image_medium,
+            reason=self.medium_reason,
+        )
+
+    def classify_garment_subject(
+        self,
+        image_path: Path,
+    ) -> GarmentSubjectGuardrailResult:
+        assert image_path.read_bytes() == JPEG_BYTES
+        self.subject_calls += 1
+        return GarmentSubjectGuardrailResult(
             primary_subject=self.primary_subject,
             garment_visibility=self.garment_visibility,
-            reason=self.guardrail_reason,
+            reason=self.subject_reason,
         )
 
     def analyze_image(self, image_path: Path) -> ClothingMetadata:
@@ -186,7 +205,8 @@ def test_clothing_image_generates_editable_draft_then_user_confirms(
     assert analyzed.json()["name"] == "Blue crew-neck T-shirt"
     assert analyzed.json()["category"] == "top"
     assert analyzed.json()["analysis_completed"] is True
-    assert fake_provider.classify_calls == 1
+    assert fake_provider.medium_calls == 1
+    assert fake_provider.subject_calls == 1
     assert fake_provider.analyze_calls == 1
     assert processing_status.json() == {
         "item_id": item_id,
@@ -240,7 +260,7 @@ def test_clear_non_clothing_image_is_rejected_and_deleted(
     client: tuple[TestClient, Path, FakeVisionProvider],
 ) -> None:
     test_client, upload_directory, fake_provider = client
-    fake_provider.guardrail_decision = ClothingGuardrailDecision.INVALID_IMAGE
+    fake_provider.image_medium = ImageMedium.NON_PHOTOGRAPHIC
     headers = auth_headers(test_client, "reject@example.com")
     item_id, relative_path, analysis_token = create_combined_upload(
         test_client,
@@ -259,6 +279,8 @@ def test_clear_non_clothing_image_is_rejected_and_deleted(
     )
 
     assert queued.status_code == 202
+    assert fake_provider.medium_calls == 1
+    assert fake_provider.subject_calls == 0
     assert fake_provider.analyze_calls == 0
     assert detail.status_code == 404
     assert processing_status.status_code == 422
@@ -290,7 +312,7 @@ def test_rejected_image_does_not_delete_pre_existing_item(
     client: tuple[TestClient, Path, FakeVisionProvider],
 ) -> None:
     test_client, upload_directory, fake_provider = client
-    fake_provider.guardrail_decision = ClothingGuardrailDecision.INVALID_IMAGE
+    fake_provider.image_medium = ImageMedium.NON_PHOTOGRAPHIC
     headers = auth_headers(test_client, "existing-reject@example.com")
     item_id, relative_path = create_and_upload(test_client, headers)
 
@@ -312,7 +334,7 @@ def test_uncertain_image_is_not_saved_or_analyzed(
     client: tuple[TestClient, Path, FakeVisionProvider],
 ) -> None:
     test_client, upload_directory, fake_provider = client
-    fake_provider.guardrail_decision = ClothingGuardrailDecision.UNCERTAIN
+    fake_provider.image_medium = ImageMedium.UNCERTAIN
     headers = auth_headers(test_client, "uncertain@example.com")
     item_id, relative_path, analysis_token = create_combined_upload(
         test_client,
@@ -457,47 +479,73 @@ def create_processing_test_item(
 
 
 @pytest.mark.parametrize(
-    ("scenario", "decision", "expected_outcome", "expected_analysis_calls"),
+    (
+        "scenario",
+        "image_medium",
+        "primary_subject",
+        "garment_visibility",
+        "expected_outcome",
+        "expected_subject_calls",
+        "expected_analysis_calls",
+    ),
     [
         pytest.param(
             "cartoon person wearing clothing",
-            ClothingGuardrailDecision.VALID_GARMENT_PHOTO,
+            ImageMedium.NON_PHOTOGRAPHIC,
+            ImagePrimarySubject.PERSON_OR_FACE,
+            GarmentVisibility.NOT_APPLICABLE,
             "rejected",
             0,
-            id="cartoon-rejected-despite-valid-model-decision",
+            0,
+            id="cartoon-medium-gate-short-circuits",
         ),
         pytest.param(
             "real shirt laid flat",
-            ClothingGuardrailDecision.VALID_GARMENT_PHOTO,
+            ImageMedium.REAL_PHOTOGRAPH,
+            ImagePrimarySubject.PHYSICAL_GARMENT,
+            GarmentVisibility.CLEAR,
             "completed",
+            1,
             1,
             id="real-shirt-laid-flat-accepted",
         ),
         pytest.param(
             "real clothing on hanger",
-            ClothingGuardrailDecision.VALID_GARMENT_PHOTO,
+            ImageMedium.REAL_PHOTOGRAPH,
+            ImagePrimarySubject.PHYSICAL_GARMENT,
+            GarmentVisibility.CLEAR,
             "completed",
+            1,
             1,
             id="real-clothing-on-hanger-accepted",
         ),
         pytest.param(
             "selfie where clothing is incidental",
-            ClothingGuardrailDecision.VALID_GARMENT_PHOTO,
+            ImageMedium.REAL_PHOTOGRAPH,
+            ImagePrimarySubject.PERSON_OR_FACE,
+            GarmentVisibility.NOT_APPLICABLE,
             "rejected",
+            1,
             0,
-            id="selfie-rejected-despite-valid-model-decision",
+            id="selfie-subject-gate-rejects-person",
         ),
         pytest.param(
             "screenshot of online clothing store",
-            ClothingGuardrailDecision.VALID_GARMENT_PHOTO,
+            ImageMedium.NON_PHOTOGRAPHIC,
+            ImagePrimarySubject.PHYSICAL_GARMENT,
+            GarmentVisibility.CLEAR,
             "rejected",
             0,
-            id="screenshot-rejected-despite-valid-model-decision",
+            0,
+            id="screenshot-medium-gate-short-circuits",
         ),
         pytest.param(
             "unclear heavily cropped clothing",
-            ClothingGuardrailDecision.UNCERTAIN,
+            ImageMedium.REAL_PHOTOGRAPH,
+            ImagePrimarySubject.UNCERTAIN,
+            GarmentVisibility.UNCLEAR,
             "rejected",
+            1,
             0,
             id="unclear-cropped-clothing-not-extracted",
         ),
@@ -506,31 +554,29 @@ def create_processing_test_item(
 def test_guardrail_scenarios_gate_metadata_extraction(
     tmp_path: Path,
     scenario: str,
-    decision: ClothingGuardrailDecision,
+    image_medium: ImageMedium,
+    primary_subject: ImagePrimarySubject,
+    garment_visibility: GarmentVisibility,
     expected_outcome: str,
+    expected_subject_calls: int,
     expected_analysis_calls: int,
 ) -> None:
-    """Only an explicit valid photo decision may reach paid extraction."""
+    """Both independent guardrail stages must pass before paid extraction."""
 
     test_engine, item_id, settings = create_processing_test_item(tmp_path)
     provider = FakeVisionProvider()
-    provider.guardrail_decision = decision
-    provider.guardrail_reason = scenario
-    if scenario == "cartoon person wearing clothing":
-        provider.image_medium = ImageMedium.NON_PHOTOGRAPHIC
-        provider.primary_subject = ImagePrimarySubject.PERSON_OR_FACE
-    elif scenario == "selfie where clothing is incidental":
-        provider.primary_subject = ImagePrimarySubject.PERSON_OR_FACE
-    elif scenario == "screenshot of online clothing store":
-        provider.image_medium = ImageMedium.NON_PHOTOGRAPHIC
-    elif scenario == "unclear heavily cropped clothing":
-        provider.garment_visibility = GarmentVisibility.UNCLEAR
+    provider.image_medium = image_medium
+    provider.primary_subject = primary_subject
+    provider.garment_visibility = garment_visibility
+    provider.medium_reason = scenario
+    provider.subject_reason = scenario
 
     with Session(test_engine) as session:
         outcome = run_clothing_processing(session, item_id, provider, settings)
 
     assert outcome == expected_outcome
-    assert provider.classify_calls == 1
+    assert provider.medium_calls == 1
+    assert provider.subject_calls == expected_subject_calls
     assert provider.analyze_calls == expected_analysis_calls
 
 
@@ -543,7 +589,7 @@ def test_rejected_upload_cleanup_retries_without_orphaning_state(
         temporary_upload=True,
     )
     provider = FakeVisionProvider()
-    provider.guardrail_decision = ClothingGuardrailDecision.INVALID_IMAGE
+    provider.image_medium = ImageMedium.NON_PHOTOGRAPHIC
     stored_file = settings.resolved_upload_directory / "1/item.jpg"
     real_delete = clothing_processing.delete_stored_image
     delete_attempts = 0
@@ -693,8 +739,10 @@ def test_openrouter_uses_separate_temperatures_and_validates_responses(
     payloads: list[dict[str, Any]] = []
     responses = [
         {
-            "decision": "valid_garment_photo",
             "image_medium": "real_photograph",
+            "reason": "Real camera photograph",
+        },
+        {
             "primary_subject": "physical_garment",
             "garment_visibility": "clear",
             "reason": "One real shirt",
@@ -720,29 +768,35 @@ def test_openrouter_uses_separate_temperatures_and_validates_responses(
     monkeypatch.setattr(httpx, "post", fake_post)
 
     assert (
-        provider.classify_image(image_path).decision
-        == ClothingGuardrailDecision.VALID_GARMENT_PHOTO
+        provider.classify_image_medium(image_path).image_medium
+        == ImageMedium.REAL_PHOTOGRAPH
+    )
+    assert (
+        provider.classify_garment_subject(image_path).primary_subject
+        == ImagePrimarySubject.PHYSICAL_GARMENT
     )
     assert provider.analyze_image(image_path).name == "White shirt"
     assert payloads[0]["temperature"] == 0.0
-    assert payloads[1]["temperature"] == 0.1
+    assert payloads[1]["temperature"] == 0.0
+    assert payloads[2]["temperature"] == 0.1
     assert payloads[0]["response_format"]["json_schema"]["strict"] is True
-    guardrail_schema = payloads[0]["response_format"]["json_schema"]["schema"]
-    assert guardrail_schema["required"] == [
-        "decision",
-        "image_medium",
+    medium_schema = payloads[0]["response_format"]["json_schema"]["schema"]
+    assert medium_schema["required"] == ["image_medium", "reason"]
+    medium_prompt = payloads[0]["messages"][0]["content"][0]["text"]
+    assert "only the image-medium gate" in medium_prompt
+    assert "drawn person wearing a realistic white button-up" in medium_prompt
+    assert "screenshots" in medium_prompt
+    assert "choose uncertain" in medium_prompt
+    subject_schema = payloads[1]["response_format"]["json_schema"]["schema"]
+    assert subject_schema["required"] == [
         "primary_subject",
         "garment_visibility",
         "reason",
     ]
-    assert "is_clothing" not in guardrail_schema["properties"]
-    guardrail_prompt = payloads[0]["messages"][0]["content"][0]["text"]
-    assert "Evaluate image_medium first" in guardrail_prompt
-    assert "cartoon person wearing a clear white button-up" in guardrail_prompt
-    assert "Do not call their shirt a physical_garment" in guardrail_prompt
-    assert "screenshot" in guardrail_prompt
-    assert "choose uncertain" in guardrail_prompt
-    metadata_schema = payloads[1]["response_format"]["json_schema"]["schema"]
+    subject_prompt = payloads[1]["messages"][0]["content"][0]["text"]
+    assert "only the garment-subject gate" in subject_prompt
+    assert "Do not classify a shirt worn by the main person" in subject_prompt
+    metadata_schema = payloads[2]["response_format"]["json_schema"]["schema"]
     assert "description" in metadata_schema["required"]
 
 

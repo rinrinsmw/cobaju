@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,6 +21,7 @@ from sqlmodel import Session, select
 from app.core.config import Settings
 from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.observability import (
+    Observation,
     Observability,
     agent_usage_details,
     finish_model_attempt,
@@ -147,7 +149,13 @@ class OpenAIAgentsStyleCritic:
 
         try:
             for attempt in range(2):
-                hooks = _CriticAttemptHooks()
+                hooks = _CriticAttemptHooks(
+                    self.observability,
+                    model_name=model_name,
+                    prompt_version=(
+                        self.settings.resolved_style_critic_prompt_version
+                    ),
+                )
                 try:
                     result = await Runner.run(
                         agent,
@@ -202,25 +210,86 @@ class OpenAIAgentsStyleCritic:
 class _CriticAttemptHooks(RunHooks[None]):
     """Record each provider attempt, including one malformed-output retry."""
 
-    def __init__(self) -> None:
-        self.attempt_ids: list[str | None] = []
+    def __init__(
+        self,
+        observability: Observability | None = None,
+        *,
+        model_name: str = "",
+        prompt_version: str = "",
+    ) -> None:
+        self.observability = observability
+        self.model_name = model_name
+        self.prompt_version = prompt_version
+        self.attempts: list[tuple[str | None, float, Observation | None]] = []
 
     async def on_llm_start(
         self, context: object, agent: object, system_prompt: object, input_items: object
     ) -> None:
         del context, agent, system_prompt, input_items
-        self.attempt_ids.append(start_model_attempt("style_critic_model"))
+        observation = None
+        if self.observability is not None:
+            observation = self.observability.start_observation(
+                "style_critic.model_attempt",
+                as_type="generation",
+                model=self.model_name,
+                metadata={
+                    "stage": "style_critic",
+                    "prompt_version": self.prompt_version,
+                },
+            )
+        self.attempts.append(
+            (
+                start_model_attempt("style_critic_model"),
+                time.perf_counter(),
+                observation,
+            )
+        )
 
     async def on_llm_end(
         self, context: object, agent: object, response: object
     ) -> None:
-        del context, agent, response
-        if self.attempt_ids:
-            finish_model_attempt(self.attempt_ids.pop())
+        del context, agent
+        if self.attempts:
+            attempt_id, started, observation = self.attempts.pop()
+            finish_model_attempt(attempt_id)
+            if observation is not None:
+                usage = getattr(response, "usage", None)
+                usage_details = {
+                    "requests": max(1, int(getattr(usage, "requests", 0))),
+                    "input": int(getattr(usage, "input_tokens", 0)),
+                    "output": int(getattr(usage, "output_tokens", 0)),
+                    "total": int(getattr(usage, "total_tokens", 0)),
+                }
+                observation.update(
+                    output={
+                        "status": "completed",
+                        "request_count": usage_details["requests"],
+                        "latency_ms": round(
+                            (time.perf_counter() - started) * 1000, 2
+                        ),
+                    },
+                    usage_details=usage_details,
+                )
+                observation.end()
 
     def close(self, error: BaseException) -> None:
-        while self.attempt_ids:
-            finish_model_attempt(self.attempt_ids.pop(), error=error)
+        while self.attempts:
+            attempt_id, started, observation = self.attempts.pop()
+            finish_model_attempt(attempt_id, error=error)
+            if observation is not None:
+                observation.update(
+                    output={
+                        "status": "failed",
+                        "stage": "style_critic",
+                        "error_type": type(error).__name__,
+                        "latency_ms": round(
+                            (time.perf_counter() - started) * 1000, 2
+                        ),
+                    },
+                    level="ERROR",
+                    status_message=type(error).__name__,
+                )
+                observation.end()
 
 
 def get_owned_item_evidence(

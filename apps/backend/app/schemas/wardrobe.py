@@ -155,11 +155,24 @@ class GarmentVisibility(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
-class ClothingGuardrailResult(BaseModel):
-    """Strict photographic-garment decision returned by the guardrail."""
+class ImageMediumGuardrailResult(BaseModel):
+    """First-stage decision about whether the depicted content is photographic."""
 
-    decision: ClothingGuardrailDecision
     image_medium: ImageMedium
+    reason: str = Field(min_length=1, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @property
+    def allows_subject_analysis(self) -> bool:
+        """Only an explicit real-photograph decision may reach stage two."""
+
+        return self.image_medium == ImageMedium.REAL_PHOTOGRAPH
+
+
+class GarmentSubjectGuardrailResult(BaseModel):
+    """Second-stage decision about the dominant subject and garment visibility."""
+
     primary_subject: ImagePrimarySubject
     garment_visibility: GarmentVisibility
     reason: str = Field(min_length=1, max_length=200)
@@ -168,12 +181,10 @@ class ClothingGuardrailResult(BaseModel):
 
     @property
     def allows_metadata_extraction(self) -> bool:
-        """Require consistent evidence in addition to the model's decision."""
+        """Require one clear physical garment as the dominant subject."""
 
         return (
-            self.decision == ClothingGuardrailDecision.VALID_GARMENT_PHOTO
-            and self.image_medium == ImageMedium.REAL_PHOTOGRAPH
-            and self.primary_subject == ImagePrimarySubject.PHYSICAL_GARMENT
+            self.primary_subject == ImagePrimarySubject.PHYSICAL_GARMENT
             and self.garment_visibility == GarmentVisibility.CLEAR
         )
 

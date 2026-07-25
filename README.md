@@ -250,10 +250,12 @@ curl -X POST http://127.0.0.1:8000/wardrobe/items/ITEM_ID/analyze \
 
 Configure `OPENROUTER_API_KEY`, `OPENROUTER_GUARDRAIL_MODEL`,
 `OPENROUTER_VISION_MODEL`, and `OPENROUTER_EMBEDDING_MODEL` in `.env` first.
-The two vision models must support image input
-and strict structured outputs. The guardrail uses temperature `0.0`; accepted
-images receive validated draft `name`, `category`, `color`, and `description`
-metadata from the vision model at temperature `0.1`.
+The two vision models must support image input and strict structured outputs.
+The guardrail uses temperature `0.0` and up to two narrow, fail-closed calls:
+one for photographic medium and one for the dominant garment subject. Only a
+real photograph followed by one clear physical garment reaches metadata
+extraction. Accepted images receive validated draft `name`, `category`, `color`,
+and `description` metadata from the vision model at temperature `0.1`.
 
 The queueing endpoint returns HTTP `202` with the item in `processing` state.
 Poll the authenticated status endpoint until it reports `completed` or

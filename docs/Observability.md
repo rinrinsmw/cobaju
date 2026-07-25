@@ -16,10 +16,13 @@ stylist_request
 ├── guardrail.validate
 ├── mcp.get_styling_candidates                     invocation_number=1
 ├── stylist_generation
+│   ├── stylist_model.attempt                       one per provider request
 │   └── agent.read_cached_wardrobe_evidence         optional if model calls tool
 ├── deterministic_validation
-├── style_critic                                   valid initial drafts only
-├── targeted_repair                                optional, cached evidence
+├── style_critic                                    valid initial drafts only
+│   └── style_critic.model_attempt                  one per provider request
+├── targeted_repair                                 optional, cached evidence
+│   └── stylist_repair_model.attempt                one per provider request
 ├── final_validation                               after optional repair
 └── response_formatting
 ```
@@ -42,18 +45,23 @@ unrelated service refactoring.
 Common Stylist-request metadata includes:
 
 - request ID;
-- a short SHA-256 user reference, never an email or JWT;
-- application version;
+- the authenticated internal numeric user ID and a short SHA-256 log-correlation
+  reference, never an email or JWT;
+- environment, release, and application version;
+- workflow name;
 - OpenRouter as the provider;
 - configured model name;
 - prompt version;
+- inferred candidate categories and whether an anchor item was requested;
 - attempt or tool invocation number where applicable.
 
-Request text, JWTs, API keys, image bytes, email addresses, system prompts, and
-stack-local secrets are not added to Stylist observations. Inputs use safe
-properties such as message length and candidate item count. The older
-`clothing_analysis` and `wardrobe_retrieval` observations include internal
-numeric item or user IDs in their bounded inputs. Langfuse's trace context
+Request text, JWTs, API keys, image bytes, email addresses, authentication
+headers, system prompts, complete wardrobe objects, and stack-local secrets are
+not added to Stylist observations. Inputs use safe properties such as message
+length, category names, candidate counts, and tool invocation counts. Wardrobe
+item IDs are not added to Langfuse observations. The older `clothing_analysis`
+and `wardrobe_retrieval` observations may include an internal user ID in their
+bounded inputs. Langfuse's trace context
 records exceptions and the failed stage; application exceptions continue
 propagating to the existing API error handling.
 
@@ -63,21 +71,27 @@ propagating to the existing API error handling.
 |---|---|
 | `auth.validate` | JWT validation and user database lookup |
 | `guardrail.validate` | Scope classifier latency, model, prompt version and tokens |
-| `stylist_generation` | Stylist generation using a registered request-cache reader |
-| `agent.read_cached_wardrobe_evidence` | Read-only cached evidence tool duration, success and candidate count |
+| `stylist_generation` | Initial Stylist stage with aggregated request count, tokens, latency, status, and registered cache reader |
+| `stylist_model.attempt` | One provider request within the tool-calling loop, including tokens, latency, and status |
+| `agent.read_cached_wardrobe_evidence` | Exact zero-argument cached tool name, duration, status, evidence count, and lifecycle invocation count |
 | `targeted_repair` | One tool-free correction using the same cached evidence |
-| `mcp.get_styling_candidates` | Single capped wardrobe retrieval duration and success |
-| `style_critic` | Tool-free critic latency, approval status, issue count, model attempts and prompt version |
+| `stylist_repair_model.attempt` | One provider request within targeted repair |
+| `mcp.get_styling_candidates` | Single capped retrieval duration, status, categories, anchor flag, and candidate count |
+| `style_critic` | Tool-free critic latency, approval status, issue count, aggregate usage and prompt version |
+| `style_critic.model_attempt` | One Style Critic provider request, including tokens, latency, and status |
 | `deterministic_validation` | Initial deterministic status and stable failure codes |
 | `final_validation` | Post-repair deterministic status and stable failure codes |
 | `recommendation_deleted` | Recommendation ID, anonymized user ID, success, and delete latency |
 | `response_formatting` | Final status, repair count, tool counts and quality output |
 
 Langfuse derives observation and total trace latency from start/end timestamps.
-Agents SDK token totals are sent as input, output, and total usage. Cobaju does
-not maintain a pricing table: `cost_details.total` is recorded only when the
-provider response includes a numeric cost. A metric absent from a provider or
-hidden by an upstream SDK remains absent rather than being guessed.
+Cobaju also records explicit stage and attempt latency in milliseconds. Agents
+SDK usage is aggregated across every `raw_response` after `Runner.run`, including
+request count plus input, output, and total tokens. Individual attempt
+observations use the corresponding model response usage. Cobaju does not
+maintain a pricing table: `cost_details.total` is recorded only when the provider
+response includes a numeric cost. A metric absent from a provider or hidden by
+an upstream SDK remains absent rather than being guessed.
 
 ## Recommendation evaluation
 
@@ -147,7 +161,9 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 `LANGFUSE_BASE_URL` remains a backward-compatible alias for `LANGFUSE_HOST`.
 Set `LANGFUSE_ENABLED=false` to disable trace export. Missing credentials or an
 SDK initialization failure also selects the no-op backend and logs a warning;
-the application continues normally.
+the application continues normally. Observation creation, context lifecycle,
+update, scoring, and end failures are also contained so a Langfuse exporter
+failure cannot change the Stylist response.
 
 Prompt versions are independently configurable:
 

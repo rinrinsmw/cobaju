@@ -209,18 +209,20 @@ the configured `UPLOAD_DIRECTORY`. Client filenames are never used for
 storage. An existing item accepts only one image.
 
 The analysis endpoint claims an item as `processing`, sends its database ID to
-Redis, and returns HTTP 202. The Celery worker first runs a temperature-0.0
-photographic garment guardrail with exactly three decisions:
-`valid_garment_photo`, `invalid_image`, and `uncertain`. Only a real photograph
-with one clearly visible physical garment as its primary subject is valid;
-clothing worn incidentally by a person does not qualify. Illustrations,
-screenshots, artwork, portraits, and unrelated subjects are invalid. Ambiguous,
-obscured, or heavily cropped garment images are uncertain. Only
-`valid_garment_photo` continues to metadata extraction. The structured result
-also records `image_medium`, `primary_subject`, and `garment_visibility`.
-Backend validation requires those fields to agree that the upload is a real
-photograph with a clear physical garment as its primary subject, so a mistaken
-valid decision cannot bypass contradictory evidence.
+Redis, and returns HTTP 202. The Celery worker runs a fail-closed, two-stage
+guardrail at temperature 0.0. The first model call decides only whether the
+depicted content is a real photograph. Illustrations, screenshots, artwork, and
+uncertain media stop immediately. Only an explicit `real_photograph` result may
+reach the second model call, which independently decides whether one clearly
+visible physical garment is the primary subject. Portraits, clothing worn
+incidentally by a person, multiple competing items, unrelated subjects, and
+uncertain visibility stop before metadata extraction.
+
+The backend validates the narrow structured result from each stage instead of
+asking one response to make every decision. Only
+`real_photograph` followed by `physical_garment` and `clear` continues to
+metadata extraction. Rejections are normalized to the workflow outcomes
+`invalid_image` or `uncertain`.
 
 When a normal new upload is invalid or uncertain, the worker deletes the image
 and its internal database row. A pre-existing successful wardrobe item is

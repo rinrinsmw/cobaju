@@ -1,5 +1,6 @@
 """Guard, retrieve once through MCP, generate, validate, and prepare optional saving."""
 
+import time
 from collections import Counter
 from contextlib import nullcontext
 
@@ -81,6 +82,14 @@ async def create_stylist_response(
         )
     )
     with request_scope as request_observation:
+        if request_observation is not None:
+            request_observation.update(
+                metadata={
+                    "workflow_name": "stylist_request",
+                    "prompt_version": settings.stylist_prompt_version,
+                    "model_name": settings.openrouter_stylist_model,
+                }
+            )
         with telemetry.observe(
             "guardrail.validate",
             as_type="generation",
@@ -146,6 +155,7 @@ async def create_stylist_response(
                     },
                 ) as critic_observation:
                     set_failing_stage("style_critic")
+                    critic_started = time.perf_counter()
                     try:
                         critic_result = await evaluator.evaluate(
                             message, outcome.response, evidence
@@ -155,8 +165,16 @@ async def create_stylist_response(
                             critic_observation.update(
                                 output={
                                     "status": "failed",
-                                    "failure_reason": type(error).__name__,
-                                }
+                                    "stage": "style_critic",
+                                    "error_type": type(error).__name__,
+                                    "latency_ms": round(
+                                        (time.perf_counter() - critic_started)
+                                        * 1000,
+                                        2,
+                                    ),
+                                },
+                                level="ERROR",
+                                status_message=type(error).__name__,
                             )
                         raise
                     if critic_observation is not None:
@@ -173,6 +191,10 @@ async def create_stylist_response(
                                     else "STYLE_CRITIC_REJECTED"
                                 ),
                                 "issue_count": len(critic_result.issues),
+                                "latency_ms": round(
+                                    (time.perf_counter() - critic_started) * 1000,
+                                    2,
+                                ),
                             }
                         )
                 critic_failures = (
@@ -223,6 +245,7 @@ async def create_stylist_response(
                 },
             ) as repair_observation:
                 set_failing_stage("targeted_repair")
+                repair_started = time.perf_counter()
                 try:
                     repaired = await stylist_request.repair(
                         message, outcome.response, repair_reasons
@@ -232,13 +255,25 @@ async def create_stylist_response(
                         repair_observation.update(
                             output={
                                 "status": "failed",
-                                "failure_reason": type(error).__name__,
-                            }
+                                "stage": "targeted_repair",
+                                "error_type": type(error).__name__,
+                                "latency_ms": round(
+                                    (time.perf_counter() - repair_started) * 1000,
+                                    2,
+                                ),
+                            },
+                            level="ERROR",
+                            status_message=type(error).__name__,
                         )
                     raise
                 if repair_observation is not None:
                     repair_observation.update(
-                        output={"status": "completed", "failure_reason": None}
+                        output={
+                            "status": "completed",
+                            "latency_ms": round(
+                                (time.perf_counter() - repair_started) * 1000, 2
+                            ),
+                        }
                     )
             structured_log(
                 "stylist_repaired_recommendation",

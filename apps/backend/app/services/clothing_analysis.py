@@ -11,8 +11,12 @@ from app.models.clothing_item import ClothingItem, ProcessingStatus
 from app.observability import Observability
 from app.schemas.wardrobe import (
     ClothingGuardrailDecision,
-    ClothingGuardrailResult,
     ClothingMetadata,
+    GarmentSubjectGuardrailResult,
+    GarmentVisibility,
+    ImageMedium,
+    ImageMediumGuardrailResult,
+    ImagePrimarySubject,
 )
 from app.services.wardrobe import (
     mark_item_processing,
@@ -27,7 +31,15 @@ class ClothingAnalysisError(Exception):
 class ClothingVisionProvider(Protocol):
     """Small boundary that lets tests replace paid AI calls with a fake."""
 
-    def classify_image(self, image_path: Path) -> ClothingGuardrailResult: ...
+    def classify_image_medium(
+        self,
+        image_path: Path,
+    ) -> ImageMediumGuardrailResult: ...
+
+    def classify_garment_subject(
+        self,
+        image_path: Path,
+    ) -> GarmentSubjectGuardrailResult: ...
 
     def analyze_image(self, image_path: Path) -> ClothingMetadata: ...
 
@@ -47,6 +59,33 @@ class ClothingAnalysisTracer:
         **attributes: Any,
     ) -> AbstractContextManager[Any]:
         return self._observability.observe(name, as_type=as_type, **attributes)
+
+
+def medium_rejection(
+    result: ImageMediumGuardrailResult,
+) -> ClothingGuardrailDecision | None:
+    """Translate the first-stage evidence into a fail-closed workflow decision."""
+
+    if result.allows_subject_analysis:
+        return None
+    if result.image_medium == ImageMedium.UNCERTAIN:
+        return ClothingGuardrailDecision.UNCERTAIN
+    return ClothingGuardrailDecision.INVALID_IMAGE
+
+
+def subject_rejection(
+    result: GarmentSubjectGuardrailResult,
+) -> ClothingGuardrailDecision | None:
+    """Translate the second-stage evidence into a fail-closed workflow decision."""
+
+    if result.allows_metadata_extraction:
+        return None
+    if (
+        result.primary_subject == ImagePrimarySubject.UNCERTAIN
+        or result.garment_visibility == GarmentVisibility.UNCLEAR
+    ):
+        return ClothingGuardrailDecision.UNCERTAIN
+    return ClothingGuardrailDecision.INVALID_IMAGE
 
 
 def analyze_clothing_item(
@@ -73,21 +112,32 @@ def analyze_clothing_item(
     try:
         with tracer.observation(
             "clothing_analysis",
-            input={"item_id": item.id, "user_id": item.user_id},
+            input={"user_id": item.user_id},
         ):
-            with tracer.observation(
-                "upload_guardrail",
-                as_type="generation",
-                model=settings.openrouter_guardrail_model,
-                model_parameters={"temperature": settings.guardrail_temperature},
-            ):
-                guardrail = provider.classify_image(image_path)
+            with tracer.observation("upload_guardrail"):
+                with tracer.observation(
+                    "image_medium_guardrail",
+                    as_type="generation",
+                    model=settings.openrouter_guardrail_model,
+                    model_parameters={"temperature": settings.guardrail_temperature},
+                ):
+                    medium_result = provider.classify_image_medium(image_path)
 
-            if not guardrail.allows_metadata_extraction:
-                rejection = guardrail.decision
-                if rejection == ClothingGuardrailDecision.VALID_GARMENT_PHOTO:
-                    rejection = ClothingGuardrailDecision.INVALID_IMAGE
-                return item, rejection
+                rejection = medium_rejection(medium_result)
+                if rejection is not None:
+                    return item, rejection
+
+                with tracer.observation(
+                    "garment_subject_guardrail",
+                    as_type="generation",
+                    model=settings.openrouter_guardrail_model,
+                    model_parameters={"temperature": settings.guardrail_temperature},
+                ):
+                    subject_result = provider.classify_garment_subject(image_path)
+
+                rejection = subject_rejection(subject_result)
+                if rejection is not None:
+                    return item, rejection
 
             with tracer.observation(
                 "vision_analysis",

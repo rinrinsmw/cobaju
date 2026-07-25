@@ -10,6 +10,7 @@ from typing import Any
 
 import anyio
 import pytest
+from agents.usage import Usage
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -20,7 +21,10 @@ from app.observability import (
     LangfuseBackend,
     NoOpBackend,
     Observability,
+    agent_usage_details,
     bind_authenticated_user,
+    start_tool_call,
+    stylist_failure_fields,
     request_observability_middleware,
     structured_log,
 )
@@ -31,7 +35,12 @@ from app.schemas.chat import (
     RequiredCategory,
     StylistResponse,
 )
-from app.schemas.mcp import SaveRecommendationOutput, ToolClothingItem
+from app.schemas.mcp import (
+    GetStylingCandidatesOutput,
+    SaveRecommendationOutput,
+    StylingCandidateGroup,
+    ToolClothingItem,
+)
 from app.services.chat import create_stylist_response
 from app.services.chat_guardrails import OpenRouterChatScopeClassifier
 from app.services.stylist_agent import (
@@ -39,6 +48,7 @@ from app.services.stylist_agent import (
     StylistLifecycleMetrics,
     StylistRunOutcome,
     ToolBudgetHooks,
+    _ModelAttemptHooks,
 )
 
 
@@ -70,7 +80,12 @@ class RecordingBackend:
     def observe(
         self, name: str, *, as_type: str = "span", **attributes: Any
     ) -> Iterator[RecordedObservation]:
-        record = {"name": name, "type": as_type, **attributes}
+        record = {
+            "name": name,
+            "type": as_type,
+            "parent": self.stack[-1].record["name"] if self.stack else None,
+            **attributes,
+        }
         observation = RecordedObservation(record)
         self.records.append(record)
         self.stack.append(observation)
@@ -90,7 +105,12 @@ class RecordingBackend:
     def start_observation(
         self, name: str, *, as_type: str = "span", **attributes: Any
     ) -> RecordedObservation:
-        record = {"name": name, "type": as_type, **attributes}
+        record = {
+            "name": name,
+            "type": as_type,
+            "parent": self.stack[-1].record["name"] if self.stack else None,
+            **attributes,
+        }
         observation = RecordedObservation(record)
         self.records.append(record)
         return observation
@@ -271,8 +291,203 @@ def test_langfuse_adapter_routes_usage_to_generation_update(
     backend.update_current(usage_details={"input": 4, "output": 2, "total": 6})
     backend.update_current(output={"accepted": True})
 
+    assert captured["client"]["environment"] == "development"
+    assert captured["client"]["release"] == "0.1.0"
     assert captured["generation"]["usage_details"]["total"] == 6
     assert captured["span"]["output"] == {"accepted": True}
+
+
+def test_agent_usage_aggregates_multiple_tool_loop_model_requests() -> None:
+    result = SimpleNamespace(
+        raw_responses=[
+            SimpleNamespace(
+                usage=Usage(
+                    requests=1,
+                    input_tokens=40,
+                    output_tokens=5,
+                    total_tokens=45,
+                )
+            ),
+            SimpleNamespace(
+                usage=Usage(
+                    requests=1,
+                    input_tokens=52,
+                    output_tokens=12,
+                    total_tokens=64,
+                )
+            ),
+        ]
+    )
+
+    assert agent_usage_details(result) == {
+        "requests": 2,
+        "input": 92,
+        "output": 17,
+        "total": 109,
+    }
+
+
+def test_mcp_and_agent_tool_failure_metrics_remain_separate() -> None:
+    observability = Observability(_settings(), backend=RecordingBackend())
+
+    with observability.request_trace(
+        request_id="separate-tools", endpoint="/chat/recommendations"
+    ):
+        start_tool_call("get_styling_candidates")
+        start_tool_call("read_cached_wardrobe_evidence", tool_kind="agent")
+        fields = stylist_failure_fields()
+
+    assert fields["tool_call_count"] == 1
+    assert fields["agent_tool_call_count"] == 1
+    assert fields["tool_calls"][0]["name"] == "get_styling_candidates"
+    assert fields["agent_tool_calls"][0]["name"] == (
+        "read_cached_wardrobe_evidence"
+    )
+
+
+def test_cached_evidence_tool_records_zero_arguments_counts_and_parent() -> None:
+    backend = RecordingBackend()
+    observability = Observability(_settings(), backend=backend)
+    item = ToolClothingItem(
+        item_id=10,
+        name="Blue shirt",
+        category=ClothingCategory.TOP,
+        color="blue",
+        description=None,
+    )
+    bundle = GetStylingCandidatesOutput(
+        anchor_item=None,
+        owned_item_ids=[10],
+        candidates_by_category=[
+            StylingCandidateGroup(category=ClothingCategory.TOP, items=[item])
+        ],
+        missing_required_categories=[],
+    )
+    metrics = StylistLifecycleMetrics(candidate_count=1)
+    hooks = _ModelAttemptHooks(
+        "stylist_model",
+        observability,
+        cached_evidence=bundle,
+        lifecycle_metrics=metrics,
+    )
+    tool = SimpleNamespace(name="read_cached_wardrobe_evidence")
+
+    async def run() -> None:
+        with observability.observe("stylist_generation", as_type="generation"):
+            await hooks.on_tool_start(None, None, tool)
+            metrics.cached_evidence_tool_call_count = 1
+            await hooks.on_tool_end(None, None, tool, "{}")
+
+    anyio.run(run)
+
+    record = backend.records[1]
+    assert record["name"] == "agent.read_cached_wardrobe_evidence"
+    assert record["parent"] == "stylist_generation"
+    assert record["input"] == {"arguments": {}, "argument_count": 0}
+    assert record["metadata"]["zero_argument_invocation"] is True
+    update = record["updates"][0]
+    assert update["output"] == {
+        "success": True,
+        "cached_evidence_item_count": 1,
+        "lifecycle_call_count": 1,
+    }
+    assert update["metadata"]["duration_ms"] >= 0
+    assert update["metadata"]["tool_name"] == "read_cached_wardrobe_evidence"
+    assert record["ended"] is True
+
+
+def test_model_attempt_records_usage_latency_success_and_parent() -> None:
+    backend = RecordingBackend()
+    observability = Observability(_settings(), backend=backend)
+    hooks = _ModelAttemptHooks(
+        "stylist_model",
+        observability,
+        model_name="stylist-model",
+        prompt_version="stylist-v5",
+    )
+    response = SimpleNamespace(
+        usage=Usage(
+            requests=1,
+            input_tokens=20,
+            output_tokens=4,
+            total_tokens=24,
+        )
+    )
+
+    async def run() -> None:
+        with observability.observe("stylist_generation", as_type="generation"):
+            await hooks.on_llm_start(None, None, None, None)
+            await hooks.on_llm_end(None, None, response)
+
+    anyio.run(run)
+
+    record = backend.records[1]
+    assert record["name"] == "stylist_model.attempt"
+    assert record["parent"] == "stylist_generation"
+    assert record["model"] == "stylist-model"
+    assert record["metadata"]["prompt_version"] == "stylist-v5"
+    update = record["updates"][0]
+    assert update["usage_details"] == {
+        "requests": 1,
+        "input": 20,
+        "output": 4,
+        "total": 24,
+    }
+    assert update["output"]["status"] == "completed"
+    assert update["output"]["latency_ms"] >= 0
+
+
+def test_telemetry_method_failures_do_not_break_application_flow() -> None:
+    class ExplodingObservation:
+        @property
+        def trace_id(self) -> str:
+            raise RuntimeError("trace-id exporter failure")
+
+        def update(self, **attributes: Any) -> None:
+            del attributes
+            raise RuntimeError("update exporter failure")
+
+        def score_trace(self, **attributes: Any) -> None:
+            del attributes
+            raise RuntimeError("score exporter failure")
+
+        def end(self) -> None:
+            raise RuntimeError("end exporter failure")
+
+    class ExplodingBackend:
+        enabled = True
+
+        @contextmanager
+        def observe(self, *args: Any, **kwargs: Any) -> Iterator[ExplodingObservation]:
+            del args, kwargs
+            yield ExplodingObservation()
+            raise RuntimeError("context exporter failure")
+
+        def start_observation(self, *args: Any, **kwargs: Any) -> ExplodingObservation:
+            del args, kwargs
+            return ExplodingObservation()
+
+        def current_trace_id(self) -> str:
+            raise RuntimeError("current trace exporter failure")
+
+        def update_current(self, **attributes: Any) -> None:
+            del attributes
+            raise RuntimeError("current update exporter failure")
+
+    observability = Observability(_settings(), backend=ExplodingBackend())
+
+    with observability.observe("safe_stage") as observation:
+        assert observation is not None
+        assert observation.trace_id is None
+        observation.update(output={"success": True})
+        observation.score_trace(name="safe", value="true")
+
+    detached = observability.start_observation("safe_tool")
+    assert detached is not None
+    detached.update(output={"success": True})
+    detached.end()
+    observability.update_current(output={"success": True})
+    assert observability.current_trace_id() is None
 
 
 def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() -> None:
@@ -337,6 +552,13 @@ def test_complete_stylist_trace_has_ordered_stages_metadata_counts_and_scores() 
     assert formatting["tool_call_count"] == 1
     assert formatting["candidate_count"] == 1
     root = backend.records[0]
+    assert root["metadata"]["environment"] == "development"
+    assert root["metadata"]["release"] == "0.1.0"
+    assert root["metadata"]["workflow_name"] == "stylist_request"
+    assert any(
+        update.get("metadata", {}).get("authenticated_internal_user_id") == 1
+        for update in root["updates"]
+    )
     assert root["scores"][0]["name"] == "hallucination_detected"
 
 
