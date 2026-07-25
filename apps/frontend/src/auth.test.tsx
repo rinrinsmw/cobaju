@@ -68,6 +68,7 @@ describe('authentication screen', () => {
 
     const createAccountSwitch = [...document.querySelectorAll('button')]
       .find(element => element.textContent === 'New here? Create an account')
+    expect(createAccountSwitch?.style.minHeight).toBe('44px')
     await act(async () => createAccountSwitch?.click())
 
     expect(document.body.textContent).toContain('Build outfits from clothes you already own.')

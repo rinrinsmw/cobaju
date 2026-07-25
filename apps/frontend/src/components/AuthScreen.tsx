@@ -50,4 +50,4 @@ export default function AuthScreen() {
 
 const inputStyle: CSSProperties = { display: 'block', width: '100%', marginTop: 7, padding: '12px 13px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 6, background: 'white', font: 'inherit' }
 const primaryButton: CSSProperties = { marginTop: 6, padding: 13, border: 0, borderRadius: 999, background: '#1a1816', color: '#f7f4ef', fontWeight: 600, cursor: 'pointer' }
-const switchButton: CSSProperties = { width: '100%', marginTop: 18, border: 0, background: 'transparent', color: '#6b6055', fontSize: 13, cursor: 'pointer' }
+const switchButton: CSSProperties = { width: '100%', minHeight: 44, marginTop: 18, padding: '10px 8px', border: 0, background: 'transparent', color: '#6b6055', fontSize: 13, cursor: 'pointer' }
