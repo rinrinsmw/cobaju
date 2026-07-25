@@ -63,6 +63,9 @@ describe('authentication screen', () => {
       )
     })
 
+    expect(document.querySelector<HTMLInputElement>('input[name="email"]')?.autocomplete).toBe('email')
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.autocomplete).toBe('current-password')
+
     const createAccountSwitch = [...document.querySelectorAll('button')]
       .find(element => element.textContent === 'New here? Create an account')
     await act(async () => createAccountSwitch?.click())
@@ -70,7 +73,10 @@ describe('authentication screen', () => {
     expect(document.body.textContent).toContain('Build outfits from clothes you already own.')
     expect(document.body.textContent).toContain('Upload your wardrobe and get personalized AI outfit recommendations.')
     expect(document.body.textContent).toContain('Private wardrobe · AI styling · No invented items')
+    expect(document.body.textContent).toContain('Use at least 8 characters.')
     expect(document.querySelector('h1')?.classList.contains('auth-heading')).toBe(true)
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.autocomplete).toBe('new-password')
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.getAttribute('aria-describedby')).toBe('registration-password-help')
 
     await unmount(root)
   })

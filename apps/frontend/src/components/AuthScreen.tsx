@@ -24,8 +24,22 @@ export default function AuthScreen() {
       {mode === 'register' && <p style={{ color: '#8b7d70', fontSize: 12, lineHeight: 1.5, marginBottom: 20 }}>Private wardrobe · AI styling · No invented items</p>}
       {sessionMessage && <p role="alert" style={{ color: '#9f3a32', fontSize: 13, marginBottom: 18 }}>{sessionMessage}</p>}
       <form onSubmit={submit} style={{ display: 'grid', gap: 15 }}>
-        <label style={{ fontSize: 12, color: '#6b6055' }}>Email<input style={inputStyle} type="email" required value={email} onChange={event => setEmail(event.target.value)} /></label>
-        <label style={{ fontSize: 12, color: '#6b6055' }}>Password<input style={inputStyle} type="password" required minLength={8} value={password} onChange={event => setPassword(event.target.value)} /></label>
+        <label style={{ fontSize: 12, color: '#6b6055' }}>Email<input style={inputStyle} type="email" name="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></label>
+        <label style={{ fontSize: 12, color: '#6b6055' }}>
+          Password
+          <input
+            style={inputStyle}
+            type="password"
+            name="password"
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            aria-describedby={mode === 'register' ? 'registration-password-help' : undefined}
+            required
+            minLength={8}
+            value={password}
+            onChange={event => setPassword(event.target.value)}
+          />
+          {mode === 'register' && <span id="registration-password-help" style={{ display: 'block', marginTop: 6 }}>Use at least 8 characters.</span>}
+        </label>
         {error && <p role="alert" style={{ color: '#9f3a32', fontSize: 13 }}>{error}</p>}
         <button disabled={submitting} style={primaryButton}>{submitting ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}</button>
       </form>
