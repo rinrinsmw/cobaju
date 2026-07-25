@@ -63,6 +63,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.auth-heading { font-size: clamp(30px, 8vw, 36px); }
+
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #c9b49a; border-radius: 99px; }

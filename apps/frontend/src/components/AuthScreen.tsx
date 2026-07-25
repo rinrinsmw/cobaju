@@ -19,7 +19,7 @@ export default function AuthScreen() {
   return <main style={{ minHeight: '100vh', background: '#100f0d', display: 'grid', placeItems: 'center', padding: 24 }}>
     <div style={{ width: 'min(440px, 100%)', background: '#f7f4ef', borderRadius: 10, padding: '42px 38px' }}>
       <p style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, fontWeight: 700, marginBottom: 6 }}>Cobaju</p>
-      <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 36, lineHeight: 1.1, marginBottom: 12 }}>{mode === 'login' ? 'Welcome back.' : 'Build outfits from clothes you already own.'}</h1>
+      <h1 className="auth-heading" style={{ fontFamily: "'Playfair Display', serif", lineHeight: 1.1, marginBottom: 12 }}>{mode === 'login' ? 'Welcome back.' : 'Build outfits from clothes you already own.'}</h1>
       <p style={{ color: '#6b6055', fontSize: 14, marginBottom: mode === 'login' ? 28 : 10 }}>{mode === 'login' ? 'Sign in to open your private wardrobe.' : 'Upload your wardrobe and get personalized AI outfit recommendations.'}</p>
       {mode === 'register' && <p style={{ color: '#8b7d70', fontSize: 12, lineHeight: 1.5, marginBottom: 20 }}>Private wardrobe · AI styling · No invented items</p>}
       {sessionMessage && <p role="alert" style={{ color: '#9f3a32', fontSize: 13, marginBottom: 18 }}>{sessionMessage}</p>}
