@@ -6,6 +6,7 @@ export default function AuthScreen() {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -25,29 +26,42 @@ export default function AuthScreen() {
       {sessionMessage && <p role="alert" style={{ color: '#9f3a32', fontSize: 13, marginBottom: 18 }}>{sessionMessage}</p>}
       <form onSubmit={submit} style={{ display: 'grid', gap: 15 }}>
         <label style={{ fontSize: 12, color: '#6b6055' }}>Email<input style={inputStyle} type="email" name="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></label>
-        <label style={{ fontSize: 12, color: '#6b6055' }}>
-          Password
-          <input
-            style={inputStyle}
-            type="password"
-            name="password"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            aria-describedby={mode === 'register' ? 'registration-password-help' : undefined}
-            required
-            minLength={8}
-            value={password}
-            onChange={event => setPassword(event.target.value)}
-          />
+        <div style={{ fontSize: 12, color: '#6b6055' }}>
+          <label htmlFor="auth-password">Password</label>
+          <div style={{ position: 'relative', marginTop: 7 }}>
+            <input
+              id="auth-password"
+              style={{ ...inputStyle, marginTop: 0, paddingRight: 72 }}
+              type={showPassword ? 'text' : 'password'}
+              name="password"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              aria-describedby={mode === 'register' ? 'registration-password-help' : undefined}
+              required
+              minLength={8}
+              value={password}
+              onChange={event => setPassword(event.target.value)}
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              onClick={() => setShowPassword(!showPassword)}
+              style={passwordToggleButton}
+            >
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </div>
           {mode === 'register' && <span id="registration-password-help" style={{ display: 'block', marginTop: 6 }}>Use at least 8 characters.</span>}
-        </label>
+        </div>
         {error && <p role="alert" style={{ color: '#9f3a32', fontSize: 13 }}>{error}</p>}
         <button disabled={submitting} style={primaryButton}>{submitting ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}</button>
       </form>
-      <button onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }} style={switchButton}>{mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}</button>
+      <button onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setShowPassword(false); setError('') }} style={switchButton}>{mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}</button>
     </div>
   </main>
 }
 
 const inputStyle: CSSProperties = { display: 'block', width: '100%', marginTop: 7, padding: '12px 13px', border: '1px solid rgba(0,0,0,.14)', borderRadius: 6, background: 'white', font: 'inherit' }
+const passwordToggleButton: CSSProperties = { position: 'absolute', top: 0, right: 0, height: '100%', minWidth: 60, padding: '0 12px', border: 0, background: 'transparent', color: '#6b6055', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
 const primaryButton: CSSProperties = { marginTop: 6, padding: 13, border: 0, borderRadius: 999, background: '#1a1816', color: '#f7f4ef', fontWeight: 600, cursor: 'pointer' }
 const switchButton: CSSProperties = { width: '100%', minHeight: 44, marginTop: 18, padding: '10px 8px', border: 0, background: 'transparent', color: '#6b6055', fontSize: 13, cursor: 'pointer' }

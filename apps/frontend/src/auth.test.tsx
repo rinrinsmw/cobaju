@@ -66,6 +66,14 @@ describe('authentication screen', () => {
     expect(document.querySelector<HTMLInputElement>('input[name="email"]')?.autocomplete).toBe('email')
     expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.autocomplete).toBe('current-password')
 
+    const showPasswordButton = [...document.querySelectorAll('button')]
+      .find(element => element.textContent === 'Show')
+    expect(showPasswordButton?.type).toBe('button')
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.type).toBe('password')
+    await act(async () => showPasswordButton?.click())
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.type).toBe('text')
+    expect(document.querySelector('button[aria-label="Hide password"]')?.getAttribute('aria-pressed')).toBe('true')
+
     const createAccountSwitch = [...document.querySelectorAll('button')]
       .find(element => element.textContent === 'New here? Create an account')
     expect(createAccountSwitch?.style.minHeight).toBe('44px')
@@ -78,6 +86,7 @@ describe('authentication screen', () => {
     expect(document.querySelector('h1')?.classList.contains('auth-heading')).toBe(true)
     expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.autocomplete).toBe('new-password')
     expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.getAttribute('aria-describedby')).toBe('registration-password-help')
+    expect(document.querySelector<HTMLInputElement>('input[name="password"]')?.type).toBe('password')
 
     await unmount(root)
   })
